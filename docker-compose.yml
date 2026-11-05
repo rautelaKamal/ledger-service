@@ -1,0 +1,25 @@
+services:
+  postgres:
+    # pgvector image = normal Postgres 17 + the pgvector extension available
+    # (not enabled yet; a later step will run CREATE EXTENSION).
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      # Host port is configurable in case 5432 is taken by another project.
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # Named volume: data survives `docker compose down`, is wiped by `down -v`.
+      - ledger_pgdata:/var/lib/postgresql/data
+      # Files here run ONCE, only when the data volume is empty.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # Healthy = the server accepts connections to the ledger database.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ledger"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  ledger_pgdata:
