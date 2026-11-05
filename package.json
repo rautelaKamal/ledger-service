@@ -5,7 +5,7 @@
   "description": "Double-entry ledger service (Postgres, raw SQL, Express)",
   "type": "module",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.12"
   },
   "scripts": {
     "db:up": "docker compose up -d --wait",

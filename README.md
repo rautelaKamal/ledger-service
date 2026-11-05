@@ -48,3 +48,12 @@ npm run db:down -- -v   # same as: docker compose down -v  (deletes all local da
 npm run db:up
 npm run migrate
 ```
+
+**After any Docker reset** (a new volume, or Docker Desktop wiped its data) the `ledger`
+database is empty again. Always run:
+
+```bash
+npm run db:up && npm run migrate
+```
+
+`npm test` migrates `ledger_test` by itself, but `npm run dev` needs `ledger` migrated.
