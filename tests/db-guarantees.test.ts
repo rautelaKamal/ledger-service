@@ -21,6 +21,8 @@ import {
   createAccount,
   createTransaction,
   insertEntry,
+  postTransaction,
+  withCommit,
   withRollback,
 } from './helpers.js';
 
@@ -52,7 +54,7 @@ describe('database guarantees', () => {
   });
 
   test('2. the app cannot UPDATE or DELETE an entry, and even the owner is blocked by the trigger', async () => {
-    const entryId = await commitBalancedTransaction(app, 10_000n);
+    const { debitEntryId: entryId } = await commitBalancedTransaction(app, 10_000n);
 
     // ledger_app: stopped by missing GRANTs (permission error).
     await expect(app.query('UPDATE entries SET amount_paise = 1 WHERE id = $1', [entryId])).rejects.toMatchObject({
@@ -88,6 +90,7 @@ describe('database guarantees', () => {
       await insertEntry(client, { transactionId: unbalancedId, accountId: from, direction: 'debit', amountPaise: 10_000n });
       // Both INSERTs succeed: the check is deferred until COMMIT ...
       await insertEntry(client, { transactionId: unbalancedId, accountId: to, direction: 'credit', amountPaise: 9_000n });
+      await postTransaction(client, unbalancedId);
       // ... and COMMIT is where it fails.
       await expect(client.query('COMMIT')).rejects.toMatchObject({
         code: PG.CHECK_VIOLATION,
@@ -102,11 +105,15 @@ describe('database guarantees', () => {
       const balancedId = await createTransaction(client);
       await insertEntry(client, { transactionId: balancedId, accountId: from, direction: 'debit', amountPaise: 10_000n });
       await insertEntry(client, { transactionId: balancedId, accountId: to, direction: 'credit', amountPaise: 10_000n });
+      await postTransaction(client, balancedId);
       await client.query('COMMIT');
 
       const saved = await client.query('SELECT 1 FROM entries WHERE transaction_id = $1', [balancedId]);
       expect(saved.rowCount).toBe(2);
     } finally {
+      // If an assertion failed mid-transaction, don't hand an aborted
+      // transaction back to the pool. (Outside a transaction this is a no-op.)
+      await client.query('ROLLBACK');
       client.release();
     }
   });
@@ -137,15 +144,11 @@ describe('database guarantees', () => {
   });
 
   test("6. a posted transaction's status cannot be changed", async () => {
-    const id = await createTransaction(app, 'pending');
-
-    // pending -> posted is allowed (posted_at must be set at the same time).
-    await app.query(`UPDATE transactions SET status = 'posted', posted_at = now() WHERE id = $1`, [id]);
+    // pending -> posted is allowed (with balanced entries, see migration 002).
+    const { transactionId: id } = await commitBalancedTransaction(app, 100n);
 
     // posted -> anything is not.
-    await expect(
-      app.query(`UPDATE transactions SET status = 'failed', posted_at = NULL WHERE id = $1`, [id]),
-    ).rejects.toMatchObject({
+    await expect(app.query(`UPDATE transactions SET status = 'failed' WHERE id = $1`, [id])).rejects.toMatchObject({
       code: PG.RAISE_EXCEPTION,
       message: expect.stringMatching(/is posted and can no longer be changed/),
     });
@@ -183,5 +186,149 @@ describe('database guarantees', () => {
         ),
       ).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
     });
+  });
+
+  // ─────────────── Step 2: transaction lifecycle (migration 002) ───────────────
+
+  test('9. a new transaction always starts as pending: the app cannot insert status or posted_at', async () => {
+    await expect(
+      app.query(`INSERT INTO transactions (kind, status) VALUES ('transfer', 'posted')`),
+    ).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+    await expect(
+      app.query(`INSERT INTO transactions (kind, posted_at) VALUES ('transfer', now())`),
+    ).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+
+    const { rows } = await app.query<{ status: string; posted_at: Date | null }>(
+      `INSERT INTO transactions (kind) VALUES ('transfer') RETURNING status, posted_at`,
+    );
+    expect(rows[0]).toEqual({ status: 'pending', posted_at: null });
+  });
+
+  test('10. entries cannot be added to a posted or a failed transaction', async () => {
+    const { transactionId: postedId } = await commitBalancedTransaction(app, 100n);
+    const failedId = await createTransaction(app);
+    await app.query(`UPDATE transactions SET status = 'failed' WHERE id = $1`, [failedId]);
+    const accountId = await createAccount(app, 'user');
+
+    for (const [transactionId, status] of [
+      [postedId, 'posted'],
+      [failedId, 'failed'],
+    ] as const) {
+      await withRollback(app, async (db) => {
+        await expect(
+          insertEntry(db, { transactionId, accountId, direction: 'credit', amountPaise: 100n }),
+        ).rejects.toMatchObject({
+          code: PG.RAISE_EXCEPTION,
+          message: expect.stringMatching(new RegExp(`it is ${status} \\(only pending transactions accept entries\\)`)),
+        });
+      });
+    }
+  });
+
+  test("11. the app can add an entry to a pending transaction (rule 2's row lock works under the app's grants)", async () => {
+    const accountId = await createAccount(app, 'user');
+
+    await withRollback(app, async (db) => {
+      const transactionId = await createTransaction(db);
+      await insertEntry(db, { transactionId, accountId, direction: 'credit', amountPaise: 100n });
+      const { rows } = await db.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM entries WHERE transaction_id = $1',
+        [transactionId],
+      );
+      expect(rows[0]?.n).toBe(1);
+    });
+  });
+
+  test('12. a transaction cannot be posted with fewer than 2 entries', async () => {
+    const accountId = await createAccount(app, 'user');
+
+    await withRollback(app, async (db) => {
+      const transactionId = await createTransaction(db);
+      await expect(postTransaction(db, transactionId)).rejects.toMatchObject({
+        code: PG.RAISE_EXCEPTION,
+        message: expect.stringMatching(/it has 0 entries, at least 2 are required/),
+      });
+    });
+
+    await withRollback(app, async (db) => {
+      const transactionId = await createTransaction(db);
+      await insertEntry(db, { transactionId, accountId, direction: 'credit', amountPaise: 100n });
+      await expect(postTransaction(db, transactionId)).rejects.toMatchObject({
+        code: PG.RAISE_EXCEPTION,
+        message: expect.stringMatching(/it has 1 entries, at least 2 are required/),
+      });
+    });
+  });
+
+  test('13. a transaction that has entries cannot be marked failed, but an empty one can', async () => {
+    const from = await createAccount(app, 'system');
+    const to = await createAccount(app, 'user');
+
+    await withRollback(app, async (db) => {
+      const transactionId = await createTransaction(db);
+      await insertEntry(db, { transactionId, accountId: from, direction: 'debit', amountPaise: 100n });
+      await insertEntry(db, { transactionId, accountId: to, direction: 'credit', amountPaise: 100n });
+      await expect(
+        db.query(`UPDATE transactions SET status = 'failed' WHERE id = $1`, [transactionId]),
+      ).rejects.toMatchObject({
+        code: PG.RAISE_EXCEPTION,
+        message: expect.stringMatching(/cannot mark transaction .* as failed: it already has 2 entries/),
+      });
+    });
+
+    const emptyId = await createTransaction(app);
+    await app.query(`UPDATE transactions SET status = 'failed' WHERE id = $1`, [emptyId]);
+    const { rows } = await app.query<{ status: string }>('SELECT status FROM transactions WHERE id = $1', [emptyId]);
+    expect(rows[0]?.status).toBe('failed');
+  });
+
+  test('14. posted_at is stamped by the database when, and only when, a transaction is posted', async () => {
+    const pendingId = await createTransaction(app);
+
+    // The app has no privilege to write posted_at ...
+    await expect(
+      app.query('UPDATE transactions SET posted_at = now() WHERE id = $1', [pendingId]),
+    ).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+    // ... and even the owner is stopped by the trigger.
+    await expect(
+      owner.query('UPDATE transactions SET posted_at = now() WHERE id = $1', [pendingId]),
+    ).rejects.toMatchObject({
+      code: PG.RAISE_EXCEPTION,
+      message: expect.stringMatching(/posted_at is set by the database/),
+    });
+
+    // Failing does not stamp it.
+    await app.query(`UPDATE transactions SET status = 'failed' WHERE id = $1`, [pendingId]);
+    // Posting does.
+    const { transactionId: postedId } = await commitBalancedTransaction(app, 100n);
+
+    const { rows } = await app.query<{ id: string; status: string; posted_at: Date | null }>(
+      'SELECT id, status, posted_at FROM transactions WHERE id = ANY($1::uuid[])',
+      [[pendingId, postedId]],
+    );
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    expect(byId.get(pendingId)).toMatchObject({ status: 'failed', posted_at: null });
+    expect(byId.get(postedId)).toMatchObject({ status: 'posted', posted_at: expect.any(Date) });
+  });
+
+  test('15. entries whose transaction is never flipped to posted make COMMIT fail', async () => {
+    const from = await createAccount(app, 'system');
+    const to = await createAccount(app, 'user');
+    let transactionId = '';
+
+    await expect(
+      withCommit(app, async (db) => {
+        transactionId = await createTransaction(db);
+        await insertEntry(db, { transactionId, accountId: from, direction: 'debit', amountPaise: 100n });
+        await insertEntry(db, { transactionId, accountId: to, direction: 'credit', amountPaise: 100n });
+        // balanced, but never posted
+      }),
+    ).rejects.toMatchObject({
+      code: PG.CHECK_VIOLATION,
+      message: expect.stringMatching(/has entries but is pending at COMMIT/),
+    });
+
+    const gone = await app.query('SELECT 1 FROM transactions WHERE id = $1', [transactionId]);
+    expect(gone.rowCount).toBe(0);
   });
 });
