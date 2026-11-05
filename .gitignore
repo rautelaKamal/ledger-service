@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+
+# Local environment files (may hold passwords). Only *.example files are committed.
+.env
+.env.test
+.env.*.local
+
+.DS_Store
+*.log
