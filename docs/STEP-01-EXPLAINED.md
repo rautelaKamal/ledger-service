@@ -252,6 +252,10 @@ Other things not enforced yet, for later steps:
 - Entries can still be added to a transaction that is already `posted`.
 - The app can insert a transaction that is already `posted`.
 
+> **Update (step 2):** migration 002 closes these three. See
+> [STEP-02-NOTES.md](STEP-02-NOTES.md). The first gap (a wrong cached `balance_paise`)
+> is still open until the reconciliation job exists.
+
 ---
 
 ## 9. Questions you should be able to answer
