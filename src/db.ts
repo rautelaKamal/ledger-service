@@ -16,8 +16,13 @@ import pg from 'pg';
 // Cast it in SQL (SUM(x)::bigint) when you want a bigint back.
 pg.types.setTypeParser(pg.types.builtins.INT8, (value: string) => BigInt(value));
 
-export function createPool(connectionString: string): pg.Pool {
-  return new pg.Pool({ connectionString, max: 10 });
+export function createPool(connectionString: string, options: { max?: number } = {}): pg.Pool {
+  return new pg.Pool({
+    connectionString,
+    max: options.max ?? 10,
+    // Fail instead of waiting forever when every connection is busy.
+    connectionTimeoutMillis: 10_000,
+  });
 }
 
 export type { Pool, PoolClient } from 'pg';
