@@ -13,6 +13,7 @@
     "migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
     "dev": "tsx watch --env-file=.env src/server.ts",
     "demo:race": "tsx --env-file=.env scripts/demo-race.ts",
+    "demo:retry": "tsx --env-file=.env scripts/demo-retry.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

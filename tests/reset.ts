@@ -4,5 +4,5 @@
  * (Kept in its own file because global-setup.ts must not import `vitest`.)
  */
 export async function resetLedger(owner: { query: (sql: string) => Promise<unknown> }): Promise<void> {
-  await owner.query('TRUNCATE entries, transactions, accounts');
+  await owner.query('TRUNCATE idempotency_keys, entries, transactions, accounts');
 }
