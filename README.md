@@ -31,6 +31,8 @@ the database is reachable.
 | `npm run dev`       | Run the API with auto-reload                                   |
 | `npm run demo:race` | Watch two concurrency bugs happen, then `transfer()` avoid them |
 | `npm run demo:retry`| Send one transfer 5 times with one key, then with 5 keys        |
+| `npm run demo:webhooks` | One top-up, confirmed 5 times plus one forged webhook       |
+| `npm run provider`  | Run the mock payment provider on port 4100                     |
 | `npm run typecheck` | TypeScript type check, no output files                         |
 | `npm test`          | Run the tests against the real `ledger_test` database          |
 
@@ -76,6 +78,50 @@ curl -i -X POST http://localhost:3000/transfers \
 
 Errors look like `{ "error": { "code": "insufficient_funds", "message": "…" } }`.
 See [docs/STEP-03-EXPLAINED.md](docs/STEP-03-EXPLAINED.md).
+
+### `POST /topups` and `POST /webhooks/provider`: money coming in
+
+A top-up is **not** credited when requested. It is credited when the payment provider
+confirms it by a signed webhook. Locally the provider is `mock-provider/` (`npm run provider`).
+
+```bash
+# Terminal 1: database, API, mock provider
+npm run db:up && npm run migrate
+npm run dev
+npm run provider          # separate terminal; reads PROVIDER_PORT / WEBHOOK_SECRET / LEDGER_WEBHOOK_URL from .env
+
+# 1. Ask for a top-up of ₹250.00 (same headers as /transfers). Nothing is credited yet.
+curl -i -X POST http://localhost:3000/topups \
+  -H 'Content-Type: application/json' -H 'X-Client-Id: demo' -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"accountId":"<user account uuid>","amountPaise":"25000"}'
+#   202 { "topupId": "<uuid>", "status": "pending" }
+
+# 2. Find the provider's paymentId for it
+psql "$DATABASE_URL" -c "select provider_payment_id from topups where transaction_id = '<topupId>'"
+
+# 3. Tell the mock provider the payment succeeded; it sends the signed webhook to the API
+curl -X POST http://localhost:4100/payments/<paymentId>/succeed -H 'Content-Type: application/json' -d '{"times": 3}'
+#   the API answers 200 { received: true, result: "posted" } once, then duplicate: true
+
+# Try /fail then /succeed for an out-of-order pair, or any amount of times for duplicates.
+```
+
+| Status (POST /topups) | When |
+|---|---|
+| `202 { topupId, status: "pending" }` | top-up recorded, provider asked; money arrives by webhook |
+| `404` / `422` | unknown account; not a user account; currency with no settlement account |
+| `502` | provider unreachable or slower than 3 s; nothing stored, retry with the same key |
+
+| Status (POST /webhooks/provider) | When |
+|---|---|
+| `200 { received: true, result }` | applied (`posted`, `failed`) or recorded (`ignored_already_final`, `anomaly_amount_mismatch`, `unmatched`, `ignored_unknown_type`) |
+| `200 { received: true, duplicate: true }` | this event id was already processed |
+| `401` | signature missing, wrong, or timestamp outside the window; nothing stored |
+| `400` | signed but not JSON / no event id; nothing stored, the provider retries |
+| `500` | unexpected; everything rolled back, the provider retries |
+
+`WEBHOOK_SECRET` must be the same value for the API and the provider. See
+[docs/STEP-04-EXPLAINED.md](docs/STEP-04-EXPLAINED.md).
 
 ## Port 5432 already in use?
 
