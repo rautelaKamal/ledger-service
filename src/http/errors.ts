@@ -24,6 +24,8 @@ export function errorBody(code: string, message: string, details?: unknown): Err
  * Returns null for anything else (an unexpected error, which becomes a 500).
  */
 export function mapBusinessError(err: unknown): { status: number; body: ErrorBody } | null {
+  // Unreachable over HTTP (the body schema only accepts positive integers),
+  // kept so transfer() stays fully mapped if another caller ever appears.
   if (err instanceof InvalidAmountError) return { status: 400, body: errorBody('invalid_amount', err.message) };
   if (err instanceof SameAccountError) return { status: 400, body: errorBody('same_account', err.message) };
   if (err instanceof AccountNotFoundError) return { status: 404, body: errorBody('account_not_found', err.message) };
