@@ -9,6 +9,7 @@ export const PG = {
   FOREIGN_KEY_VIOLATION: '23503',
   RAISE_EXCEPTION: 'P0001', // plain RAISE EXCEPTION in a trigger
   DEADLOCK_DETECTED: '40P01',
+  UNIQUE_VIOLATION: '23505',
 } as const;
 
 type Queryable = Pool | PoolClient;
