@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { runMigrations } from '../scripts/migrate.js';
+import { resetLedger } from './reset.js';
 import { loadTestEnv } from './load-env.js';
 
 export default async function setup(): Promise<void> {
@@ -17,7 +18,7 @@ export default async function setup(): Promise<void> {
   const owner = new pg.Client({ connectionString: ownerUrl });
   await owner.connect();
   try {
-    await owner.query('TRUNCATE entries, transactions, accounts');
+    await resetLedger(owner);
   } finally {
     await owner.end();
   }

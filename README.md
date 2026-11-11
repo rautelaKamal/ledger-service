@@ -29,6 +29,7 @@ the database is reachable.
 | `npm run db:down`   | Stop Postgres (data is kept in the `ledger_pgdata` volume)     |
 | `npm run migrate`   | Apply new SQL migrations as `ledger_owner`                     |
 | `npm run dev`       | Run the API with auto-reload                                   |
+| `npm run demo:race` | Watch two concurrency bugs happen, then `transfer()` avoid them |
 | `npm run typecheck` | TypeScript type check, no output files                         |
 | `npm test`          | Run the tests against the real `ledger_test` database          |
 
@@ -48,3 +49,12 @@ npm run db:down -- -v   # same as: docker compose down -v  (deletes all local da
 npm run db:up
 npm run migrate
 ```
+
+**After any Docker reset** (a new volume, or Docker Desktop wiped its data) the `ledger`
+database is empty again. Always run:
+
+```bash
+npm run db:up && npm run migrate
+```
+
+`npm test` migrates `ledger_test` by itself, but `npm run dev` needs `ledger` migrated.
