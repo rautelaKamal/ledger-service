@@ -6,6 +6,10 @@ import { z } from 'zod';
 const EnvSchema = z.object({
   DATABASE_URL: z.string().startsWith('postgres://'),
   PORT: z.coerce.number().int().positive().default(3000),
+  // Where the payment provider (mock-provider/ locally) accepts POST /payments.
+  PROVIDER_URL: z.url(),
+  // Shared secret the provider signs webhooks with. Never hard-code it.
+  WEBHOOK_SECRET: z.string().min(16, 'use at least 16 characters'),
 });
 
 export type Config = z.infer<typeof EnvSchema>;
