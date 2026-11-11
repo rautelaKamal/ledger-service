@@ -1,8 +1,8 @@
 # Step 2 notes
 
-Step 2 closes the lifecycle gaps from step 1 (migration 002) and sets up the tests for
-`transfer()`. The transfer itself is not implemented yet: `src/ledger/transfer.ts` is a stub,
-and `tests/transfer.test.ts` stays red until it is written.
+Step 2 closes the lifecycle gaps from step 1 (migration 002), adds the tests for
+`transfer()`, and then implements it. The line-by-line walkthrough of the implementation
+is in [STEP-02-EXPLAINED.md](STEP-02-EXPLAINED.md); this file covers the database rules.
 
 ---
 
@@ -120,9 +120,9 @@ result means the ledger reconciles. The transfer tests run it after **every** te
   for that, so the test fails on a *wrong result* rather than a timeout, and still fails
   quickly in CI.
 
-**Expected state until `transfer()` is written:** the 15 DB guarantee tests pass, and the 5
-transfer tests fail with `not implemented: Kamal writes this`. CI on this branch is red
-for that reason.
+`transfer()` is implemented in `src/ledger/transfer.ts` and walked through in
+[STEP-02-EXPLAINED.md](STEP-02-EXPLAINED.md). All 20 tests pass. `npm run demo:race`
+shows the two bugs the concurrency tests guard against, happening live.
 
 ---
 
