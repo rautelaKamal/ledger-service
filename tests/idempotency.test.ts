@@ -10,7 +10,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
 import { createPool, type Pool } from '../src/db.js';
 import { deleteExpiredIdempotencyKeys, runIdempotent } from '../src/idempotency.js';
 import { balanceOf, createAccount, expectLedgerReconciles, fundAccount } from './helpers.js';
-import { postTransfer, startTestServer, type TestServer } from './http.js';
+import { TEST_KEY_CLAIM_TIMEOUT_MS, postTransfer, startTestServer, type TestServer } from './http.js';
 import { resetLedger } from './reset.js';
 
 let app: Pool; // ledger_app
@@ -224,7 +224,7 @@ describe('POST /transfers with Idempotency-Key', () => {
     expect((await send({ rawBody: '{not json' })).status).toBe(400);
     expect((await send({ body: { ...body, extra: 1 } })).status).toBe(400); // .strict()
     expect((await send({ body: { ...body, fromAccountId: 'not-a-uuid' } })).status).toBe(400);
-    for (const amountPaise of ['1.5', '-3', '1e3', '', 100]) {
+    for (const amountPaise of ['0', '007', '1.5', '-3', '1e3', '', 100]) {
       const res = await send({ body: { ...body, amountPaise } });
       expect(res.status, `amountPaise ${JSON.stringify(amountPaise)}`).toBe(400);
       expect(res.json).toMatchObject({ error: { code: 'invalid_body' } });
@@ -235,7 +235,7 @@ describe('POST /transfers with Idempotency-Key', () => {
   });
 
   test(
-    '10. a duplicate that waits more than 5 s for the first request gets 409 with Retry-After',
+    '10. a duplicate that waits longer than the key-claim timeout gets 409 with Retry-After',
     async () => {
       const { body } = await setupPair();
       const key = newKey();
@@ -256,13 +256,13 @@ describe('POST /transfers with Idempotency-Key', () => {
         expect(res.status).toBe(409);
         expect(res.headers.get('retry-after')).toBe('1');
         expect(res.json).toMatchObject({ error: { code: 'request_in_progress' } });
-        expect(waited).toBeGreaterThanOrEqual(4_500); // it did wait, then gave up
+        expect(waited).toBeGreaterThanOrEqual(TEST_KEY_CLAIM_TIMEOUT_MS - 100); // it did wait, then gave up
       } finally {
         await holder.query('ROLLBACK');
         holder.release();
       }
     },
-    20_000,
+    10_000,
   );
 
   test('11. business error responses map to the agreed status codes', async () => {
@@ -270,7 +270,6 @@ describe('POST /transfers with Idempotency-Key', () => {
     const usd = await createAccount(app, 'user', 'USD');
     const send = (b2: Record<string, string>) => postTransfer(server.url, { key: newKey(), clientId: CLIENT, body: b2 });
 
-    expect(await send({ ...body, amountPaise: '0' })).toMatchObject({ status: 400, json: { error: { code: 'invalid_amount' } } });
     expect(await send({ ...body, toAccountId: a })).toMatchObject({ status: 400, json: { error: { code: 'same_account' } } });
     expect(await send({ ...body, toAccountId: randomUUID() })).toMatchObject({ status: 404, json: { error: { code: 'account_not_found' } } });
     expect(await send({ ...body, toAccountId: usd })).toMatchObject({ status: 422, json: { error: { code: 'currency_mismatch' } } });
@@ -278,4 +277,32 @@ describe('POST /transfers with Idempotency-Key', () => {
     expect(await balanceOf(app, a)).toBe(10_000n);
     expect(await balanceOf(app, b)).toBe(0n);
   });
+
+  test(
+    '12. waiting on an account lock longer than the key-claim timeout is NOT a 409: the transfer still succeeds',
+    async () => {
+      const { a, b, body } = await setupPair();
+
+      // Hold a lock on account A, as a slow concurrent transfer would.
+      const holder = await app.connect();
+      await holder.query('BEGIN');
+      await holder.query('SELECT 1 FROM accounts WHERE id = $1 FOR UPDATE', [a]);
+
+      // A request with its OWN key: it claims the key instantly, then queues on A's row.
+      const started = Date.now();
+      const pending = postTransfer(server.url, { key: newKey(), clientId: CLIENT, body });
+
+      // Release the row only after longer than the key-claim timeout.
+      await new Promise((r) => setTimeout(r, TEST_KEY_CLAIM_TIMEOUT_MS + 500));
+      await holder.query('ROLLBACK');
+      holder.release();
+
+      const res = await pending;
+      expect(Date.now() - started).toBeGreaterThanOrEqual(TEST_KEY_CLAIM_TIMEOUT_MS + 400);
+      expect(res.status).toBe(201);
+      expect(await balanceOf(app, a)).toBe(7_500n);
+      expect(await balanceOf(app, b)).toBe(2_500n);
+    },
+    10_000,
+  );
 });

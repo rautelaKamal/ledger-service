@@ -53,8 +53,8 @@ Body (no extra fields allowed):
 { "fromAccountId": "<uuid>", "toAccountId": "<uuid>", "amountPaise": "2500", "note": "optional" }
 ```
 
-`amountPaise` is a **string** of digits so the amount never passes through a floating-point
-number.
+`amountPaise` is a **string** holding a positive integer (`^[1-9][0-9]*$`) so the amount
+never passes through a floating-point number.
 
 ```bash
 curl -i -X POST http://localhost:3000/transfers \
@@ -70,7 +70,7 @@ curl -i -X POST http://localhost:3000/transfers \
 | `400` | invalid body or amount, same account, missing `Idempotency-Key` |
 | `401` | missing `X-Client-Id` |
 | `404` | an account does not exist |
-| `409` + `Retry-After: 1` | the first request with this key is still running after 5 s |
+| `409` + `Retry-After: 1` | the first request with this key is still running after 5 s (configurable) |
 | `422` | insufficient funds, currency mismatch, or this key was already used for a different request |
 | `500` | unexpected; nothing was stored, retry with the same key |
 

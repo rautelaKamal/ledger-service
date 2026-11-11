@@ -2,8 +2,9 @@ import express from 'express';
 import type { Pool } from './db.js';
 import { errorBody } from './http/errors.js';
 import { transfersRouter } from './http/transfers.js';
+import type { IdempotentOptions } from './idempotency.js';
 
-export function createApp(pool: Pool): express.Express {
+export function createApp(pool: Pool, options: IdempotentOptions = {}): express.Express {
   const app = express();
   app.use(express.json());
 
@@ -18,7 +19,7 @@ export function createApp(pool: Pool): express.Express {
     }
   });
 
-  app.use(transfersRouter(pool));
+  app.use(transfersRouter(pool, options));
 
   // Last resort. Express 5 routes rejected promises here automatically.
   const errorHandler: express.ErrorRequestHandler = (err, _req, res, _next) => {
