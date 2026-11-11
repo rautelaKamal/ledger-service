@@ -30,8 +30,52 @@ the database is reachable.
 | `npm run migrate`   | Apply new SQL migrations as `ledger_owner`                     |
 | `npm run dev`       | Run the API with auto-reload                                   |
 | `npm run demo:race` | Watch two concurrency bugs happen, then `transfer()` avoid them |
+| `npm run demo:retry`| Send one transfer 5 times with one key, then with 5 keys        |
 | `npm run typecheck` | TypeScript type check, no output files                         |
 | `npm test`          | Run the tests against the real `ledger_test` database          |
+
+## API
+
+### `POST /transfers`
+
+Moves money between two accounts of the same currency. Safe to retry: send the same
+`Idempotency-Key` and you get the first answer back instead of a second transfer.
+
+| Header | Required | Meaning |
+|---|---|---|
+| `Idempotency-Key` | yes (1–255 chars) | Unique per intended transfer; reuse it on retries. Keys expire after 24 h. |
+| `X-Client-Id` | yes | Who is calling. Keys are scoped per client. **A stand-in for authentication**, which a later step adds. |
+| `Content-Type` | `application/json` | |
+
+Body (no extra fields allowed):
+
+```json
+{ "fromAccountId": "<uuid>", "toAccountId": "<uuid>", "amountPaise": "2500", "note": "optional" }
+```
+
+`amountPaise` is a **string** of digits so the amount never passes through a floating-point
+number.
+
+```bash
+curl -i -X POST http://localhost:3000/transfers \
+  -H 'Content-Type: application/json' \
+  -H 'X-Client-Id: demo' \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"fromAccountId":"<uuid>","toAccountId":"<uuid>","amountPaise":"2500","note":"rent"}'
+```
+
+| Status | When |
+|---|---|
+| `201 { "transactionId": … }` | money moved (or, with `Idempotent-Replayed: true`, moved earlier under this key) |
+| `400` | invalid body or amount, same account, missing `Idempotency-Key` |
+| `401` | missing `X-Client-Id` |
+| `404` | an account does not exist |
+| `409` + `Retry-After: 1` | the first request with this key is still running after 5 s |
+| `422` | insufficient funds, currency mismatch, or this key was already used for a different request |
+| `500` | unexpected; nothing was stored, retry with the same key |
+
+Errors look like `{ "error": { "code": "insufficient_funds", "message": "…" } }`.
+See [docs/STEP-03-EXPLAINED.md](docs/STEP-03-EXPLAINED.md).
 
 ## Port 5432 already in use?
 
