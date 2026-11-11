@@ -331,4 +331,60 @@ describe('database guarantees', () => {
     const gone = await app.query('SELECT 1 FROM transactions WHERE id = $1', [transactionId]);
     expect(gone.rowCount).toBe(0);
   });
+
+  // ─────────────── Step 3: idempotency_keys (migration 003) ───────────────
+
+  test('16. the app cannot delete a live idempotency key, but can delete an expired one', async () => {
+    await owner.query(
+      `INSERT INTO idempotency_keys (client_id, key, request_hash, response_status, response_body, created_at, expires_at)
+       VALUES ('c', 'live',    repeat('a', 64), 201, '{}', now(), now() + interval '1 hour'),
+              ('c', 'expired', repeat('b', 64), 201, '{}', now() - interval '2 days', now() - interval '1 day')`,
+    );
+
+    await expect(app.query(`DELETE FROM idempotency_keys WHERE client_id = 'c' AND key = 'live'`)).rejects.toMatchObject({
+      code: PG.RAISE_EXCEPTION,
+      message: expect.stringMatching(/has not expired .* and cannot be deleted/),
+    });
+    const deleted = await app.query(`DELETE FROM idempotency_keys WHERE client_id = 'c' AND key = 'expired'`);
+    expect(deleted.rowCount).toBe(1);
+  });
+
+  test('17. an idempotency key with a stored response is frozen, even for the owner', async () => {
+    await owner.query(
+      `INSERT INTO idempotency_keys (client_id, key, request_hash, response_status, response_body)
+       VALUES ('c', 'done', repeat('c', 64), 201, '{"transactionId":"x"}')`,
+    );
+
+    await expect(
+      app.query(`UPDATE idempotency_keys SET response_status = 500 WHERE client_id = 'c' AND key = 'done'`),
+    ).rejects.toMatchObject({ code: PG.RAISE_EXCEPTION, message: expect.stringMatching(/already has a stored response/) });
+    await expect(
+      owner.query(`UPDATE idempotency_keys SET response_body = '{}' WHERE client_id = 'c' AND key = 'done'`),
+    ).rejects.toMatchObject({ code: PG.RAISE_EXCEPTION, message: expect.stringMatching(/already has a stored response/) });
+    await expect(
+      owner.query(`UPDATE idempotency_keys SET expires_at = now() WHERE client_id = 'c' AND key = 'done'`),
+    ).rejects.toMatchObject({ code: PG.RAISE_EXCEPTION, message: expect.stringMatching(/are immutable/) });
+  });
+
+  test("18. the app cannot insert a response or choose an idempotency key's expiry", async () => {
+    await expect(
+      app.query(
+        `INSERT INTO idempotency_keys (client_id, key, request_hash, response_status, response_body)
+         VALUES ('c', 'k1', repeat('d', 64), 201, '{}')`,
+      ),
+    ).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+    await expect(
+      app.query(
+        `INSERT INTO idempotency_keys (client_id, key, request_hash, expires_at)
+         VALUES ('c', 'k2', repeat('d', 64), now() + interval '10 years')`,
+      ),
+    ).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+
+    // The database fills the timing columns.
+    const { rows } = await app.query<{ hours: number }>(
+      `INSERT INTO idempotency_keys (client_id, key, request_hash) VALUES ('c', 'k3', repeat('d', 64))
+       RETURNING round(extract(epoch FROM (expires_at - created_at)) / 3600)::int AS hours`,
+    );
+    expect(rows[0]?.hours).toBe(24);
+  });
 });
