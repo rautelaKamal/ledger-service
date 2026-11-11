@@ -41,13 +41,14 @@ The whole request runs in **one database transaction**:
 
 ```
 BEGIN
-SET LOCAL lock_timeout = '5s'
+set lock_timeout = 5s            (SET LOCAL: this transaction only)
 INSERT INTO idempotency_keys (client_id, key, request_hash) … ON CONFLICT DO NOTHING
   ├─ 1 row inserted  → the key is ours, continue
   └─ 0 rows          → someone already finished it: read their row
                         ├─ expired?            → delete it, claim again
                         ├─ different hash?     → ROLLBACK, 422
                         └─ same hash           → ROLLBACK, replay stored response (Idempotent-Replayed: true)
+set lock_timeout = 0             (back to "wait as long as it takes")
 SAVEPOINT before_work
 transferWithClient(client, …)
   ├─ success          → RELEASE SAVEPOINT
@@ -78,19 +79,26 @@ takes milliseconds, the wait falls out of the primary key for free, and the clie
 real answer instead of a "try again" it then has to handle.
 
 But waiting forever is a trap: a stuck first request would pile its duplicates onto
-connections until the pool is empty. So the transaction sets `lock_timeout = '5s'`. If the
-key (or an account row) isn't free within 5 seconds, Postgres raises `55P03`, and the API
-answers **409 with `Retry-After: 1`**. Test 10 proves it by holding a key open in a
-transaction and watching a duplicate wait ~5 s and then get 409.
+connections until the pool is empty. So the key claim runs with a `lock_timeout` (5 s by
+default, 1 s in tests; `createApp(pool, { keyClaimTimeoutMs })`). If the key isn't free
+in time, Postgres raises `55P03`, and the API answers **409 with `Retry-After: 1`**. Test 10
+proves it by holding a key open in a transaction and watching a duplicate wait and then
+get 409.
+
+The timeout covers **only the key claim**. Right after it, the transaction sets
+`lock_timeout = 0` again, so the account-row locks that `transferWithClient` takes wait as
+long as they need to. Queuing behind other transfers on a busy account is normal, not a
+sign that this key is busy, and must never become a 409. Test 12 proves it: a transfer
+with its own key that waits longer than the timeout on an account row still gets 201.
 
 ### What is stored, what isn't
 
 | Outcome | Stored under the key? | Why |
 |---|---|---|
 | 201 created | yes | the answer |
-| business error from `transfer()` (400 invalid amount / same account, 404, 422 currency / funds) | **yes** | it's a real answer; a retry must not quietly succeed later (test 5) |
+| business error from `transfer()` (400 same account, 404, 422 currency / funds) | **yes** | it's a real answer; a retry must not quietly succeed later (test 5) |
 | same key, different fingerprint → 422 | no (the original stays) | the request was refused, not processed |
-| malformed request → 400/401 (bad JSON, failed validation, missing headers) | no | there's no well-formed request to fingerprint, and nothing happened |
+| malformed request → 400/401 (bad JSON, failed validation incl. `amountPaise` `"0"`, missing headers) | no | there's no well-formed request to fingerprint, and nothing happened |
 | unexpected error → 500 | **no** | the whole transaction rolled back; the client should retry (test 6) |
 | 409 busy | no | nothing happened; retry |
 
@@ -101,6 +109,13 @@ the **validated** body re-serialised in a fixed field order. So `{"a":…,"b":�
 `{"b":…,"a":…}` are the same request, but changing the amount is a different one. The zod
 schema is `.strict()`: an unknown field is a 400, never silently dropped, so two requests
 can't hash the same while differing in a field we ignored.
+
+**Which 400s are stored?** None. `amountPaise` must match `^[1-9][0-9]*$` (a positive
+integer, no leading zeros), so `"0"` is rejected by the schema before anything is claimed.
+Every 400 the API returns means "the request itself was malformed", and nothing is stored.
+The only stored 400 is `same_account`, which is a business answer from `transfer()` about
+a well-formed request. (`InvalidAmountError` is still mapped in `errors.ts` but can no
+longer be reached over HTTP.)
 
 ---
 
@@ -129,11 +144,12 @@ trigger is the guardrail against bugs.
 | Rule | Bug it prevents |
 |---|---|
 | Claim the key **before** running the work, in the same transaction | Concurrent duplicates all running the transfer (test 4). |
-| `SET LOCAL lock_timeout = '5s'` → 409 | A stuck request exhausting the connection pool through its duplicates (test 10). |
+| `lock_timeout` on the key claim → 409 | A stuck request exhausting the connection pool through its duplicates (test 10). |
+| `lock_timeout = 0` again after the claim | Normal queuing on a busy account's row being reported as 409 (test 12). |
 | Business errors returned (not thrown) from the work, then `ROLLBACK TO SAVEPOINT` | A failed transfer leaving half-written rows, while still remembering the answer (test 5). |
 | Unexpected errors → `ROLLBACK` everything | A key stored for a request that never completed, blocking all retries forever (test 6). |
 | Expired row on conflict → delete and reclaim | A 25-hour-old key replaying a stale answer, or blocking a legitimate new request (test 8). |
-| `amountPaise` is a string of digits | An amount passing through a JS `number` and rounding; `1e3`, `1.5`, `-3` all rejected (test 9). |
+| `amountPaise` is a string matching `^[1-9][0-9]*$` | An amount passing through a JS `number` and rounding; `0`, `007`, `1e3`, `1.5`, `-3` all rejected as 400 and never stored (test 9). |
 | `.strict()` body schema | Unknown fields silently dropped before hashing (test 9). |
 | `X-Client-Id` required (401) | Keys from different clients colliding. **This header is a stand-in for authentication**; a later step replaces it with real auth and derives the client id from the credential. |
 
@@ -163,4 +179,4 @@ Behaviour is unchanged; all step 2 tests pass as they were.
 5. The first request crashes after the transfer's rows are written but before `UPDATE idempotency_keys`. What does the client see, and what happens on its retry?
 6. What would go wrong if the key were claimed in its own short transaction (commit), then the transfer ran in a second transaction?
 7. Why is deleting a live idempotency key dangerous enough to deserve a trigger, when deleting an expired one is fine?
-8. `lock_timeout` also covers the `FOR UPDATE` on account rows. Describe a situation where a request gets 409 even though no other request used its key.
+8. The key claim runs with a `lock_timeout`, and it is set back to 0 before the transfer. What would a client see under heavy load on one account if that reset were forgotten, and why would that be a lie?
