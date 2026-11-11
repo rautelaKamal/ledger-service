@@ -1,11 +1,35 @@
 import express from 'express';
 import type { Pool } from './db.js';
 import { errorBody } from './http/errors.js';
+import { topupsRouter } from './http/topups.js';
 import { transfersRouter } from './http/transfers.js';
+import { webhooksRouter } from './http/webhooks.js';
 import type { IdempotentOptions } from './idempotency.js';
+import type { ProviderClient } from './provider/client.js';
+import type { WebhookTestHooks } from './webhooks/process.js';
 
-export function createApp(pool: Pool, options: IdempotentOptions = {}): express.Express {
+export interface AppOptions extends IdempotentOptions {
+  /** How we ask the payment provider for a payment (HTTP in production, in-process in tests). */
+  provider: ProviderClient;
+  /** Shared secret the provider signs webhooks with (WEBHOOK_SECRET). */
+  webhookSecret: string;
+  /** Test-only fault injection. Only reachable through this option: never env, never a request. */
+  testHooks?: WebhookTestHooks;
+}
+
+export function createApp(pool: Pool, options: AppOptions): express.Express {
   const app = express();
+
+  // Webhooks are verified over the RAW request bytes, so their router (which
+  // uses express.raw on its one route) must be mounted before express.json()
+  // gets a chance to parse and discard the original bytes.
+  app.use(
+    webhooksRouter(pool, {
+      webhookSecret: options.webhookSecret,
+      ...(options.testHooks ? { testHooks: options.testHooks } : {}),
+    }),
+  );
+
   app.use(express.json());
 
   // 200 only if the database answers a trivial query; 503 otherwise.
@@ -19,7 +43,9 @@ export function createApp(pool: Pool, options: IdempotentOptions = {}): express.
     }
   });
 
-  app.use(transfersRouter(pool, options));
+  const idempotency = { ...(options.keyClaimTimeoutMs !== undefined ? { keyClaimTimeoutMs: options.keyClaimTimeoutMs } : {}) };
+  app.use(transfersRouter(pool, idempotency));
+  app.use(topupsRouter(pool, options.provider, idempotency));
 
   // Last resort. Express 5 routes rejected promises here automatically.
   const errorHandler: express.ErrorRequestHandler = (err, _req, res, _next) => {
