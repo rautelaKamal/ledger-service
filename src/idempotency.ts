@@ -23,6 +23,16 @@ export interface WorkResult {
  */
 export type IdempotentWork = (client: PoolClient) => Promise<WorkResult>;
 
+export interface IdempotentOptions {
+  /**
+   * How long a duplicate request may wait for the FIRST request with the same
+   * key to finish before giving up with IdempotencyKeyBusyError (HTTP 409).
+   * Applies to the key claim only, never to the work's own locks.
+   * Default 5 s; tests use 1 s to stay fast.
+   */
+  keyClaimTimeoutMs?: number;
+}
+
 export interface IdempotentResult {
   status: number;
   body: unknown;
@@ -40,7 +50,7 @@ export class IdempotencyKeyBusyError extends Error {
   override name = 'IdempotencyKeyBusyError';
 }
 
-const LOCK_TIMEOUT = '5s';
+export const DEFAULT_KEY_CLAIM_TIMEOUT_MS = 5_000;
 const LOCK_NOT_AVAILABLE = '55P03'; // SQLSTATE raised when lock_timeout fires
 
 interface ExistingKeyRow {
@@ -61,21 +71,31 @@ interface ExistingKeyRow {
  *
  * A duplicate request arriving while the first is still running blocks on the
  * key's primary key until the first finishes, then replays its result. If the
- * first takes longer than LOCK_TIMEOUT, the duplicate gives up with
+ * first takes longer than keyClaimTimeoutMs, the duplicate gives up with
  * IdempotencyKeyBusyError (HTTP 409 + Retry-After) instead of waiting forever.
  */
-export async function runIdempotent(pool: Pool, scope: IdempotencyScope, work: IdempotentWork): Promise<IdempotentResult> {
+export async function runIdempotent(
+  pool: Pool,
+  scope: IdempotencyScope,
+  work: IdempotentWork,
+  options: IdempotentOptions = {},
+): Promise<IdempotentResult> {
+  const keyClaimTimeoutMs = options.keyClaimTimeoutMs ?? DEFAULT_KEY_CLAIM_TIMEOUT_MS;
   const client = await pool.connect();
   let connectionBroken = false;
   try {
     await client.query('BEGIN');
-    // Bound every lock wait in this transaction (the key row, and the account
-    // rows the work locks). Prevents: a slow or stuck request making its
-    // duplicates pile up on connections indefinitely.
-    await client.query(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'`);
 
     // Step 1: claim the key, or find out who already has it.
+    // The wait on the key row is bounded (set_config(..., true) = SET LOCAL:
+    // it lasts for this transaction only). Prevents: a slow or stuck first
+    // request making its duplicates pile up on connections indefinitely.
+    await client.query(`SELECT set_config('lock_timeout', $1, true)`, [`${keyClaimTimeoutMs}ms`]);
     const existing = await claimKey(client, scope);
+    // Back to "wait as long as it takes" for everything after the claim. The
+    // work's own row locks (account rows under contention) are ordinary queuing,
+    // not a sign that this key is busy, so they must never turn into a 409.
+    await client.query(`SELECT set_config('lock_timeout', '0', true)`);
     if (existing) {
       // Someone finished this request before us. Nothing to do; hand back their answer.
       await client.query('ROLLBACK');
@@ -111,8 +131,10 @@ export async function runIdempotent(pool: Pool, scope: IdempotencyScope, work: I
       connectionBroken = true;
     }
     if (isPgError(err) && err.code === LOCK_NOT_AVAILABLE) {
+      // Only the key claim runs with a lock_timeout, so this can only mean
+      // "the first request with this key is still running".
       throw new IdempotencyKeyBusyError(
-        `another request with key "${scope.key}" is still being processed (waited ${LOCK_TIMEOUT})`,
+        `another request with key "${scope.key}" is still being processed (waited ${keyClaimTimeoutMs} ms)`,
       );
     }
     throw err;

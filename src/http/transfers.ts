@@ -2,21 +2,26 @@ import { createHash } from 'node:crypto';
 import { Router } from 'express';
 import { z } from 'zod';
 import type { Pool } from '../db.js';
-import { IdempotencyKeyBusyError, IdempotencyKeyReusedError, runIdempotent } from '../idempotency.js';
+import {
+  IdempotencyKeyBusyError,
+  IdempotencyKeyReusedError,
+  runIdempotent,
+  type IdempotentOptions,
+} from '../idempotency.js';
 import { transferWithClient } from '../ledger/transfer.js';
 import { errorBody, mapBusinessError } from './errors.js';
 
-// amountPaise is a STRING of digits, so the amount never passes through a JS
-// number (which silently rounds above 2^53). "1.5", "-3", "1e3", "" and a JSON
-// number are all rejected here. Zero is a valid string and is rejected by
-// transfer() itself (InvalidAmountError -> 400).
+// amountPaise is a STRING holding a positive integer, so the amount never
+// passes through a JS number (which silently rounds above 2^53). "0", "007",
+// "1.5", "-3", "1e3", "" and a JSON number are all rejected here, so every
+// malformed amount is a 400 that is never stored under the key.
 // .strict(): unknown fields are an error, not silently dropped. Otherwise two
 // requests differing only in an ignored field would hash the same.
 const TransferBody = z
   .object({
     fromAccountId: z.uuid(),
     toAccountId: z.uuid(),
-    amountPaise: z.string().regex(/^[0-9]+$/, 'must be a string of digits (paise)'),
+    amountPaise: z.string().regex(/^[1-9][0-9]*$/, 'must be a positive integer as a string (paise)'),
     note: z.string().max(500).optional(),
   })
   .strict();
@@ -39,7 +44,7 @@ export function transferRequestHash(body: TransferBody): string {
   return createHash('sha256').update(`POST\n/transfers\n${canonical}`).digest('hex');
 }
 
-export function transfersRouter(pool: Pool): Router {
+export function transfersRouter(pool: Pool, options: IdempotentOptions = {}): Router {
   const router = Router();
 
   router.post('/transfers', async (req, res) => {
@@ -87,6 +92,7 @@ export function transfersRouter(pool: Pool): Router {
             return mapped;
           }
         },
+        options,
       );
 
       if (result.replayed) res.setHeader('Idempotent-Replayed', 'true');
