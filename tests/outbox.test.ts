@@ -451,7 +451,12 @@ describe('transactional outbox and worker', () => {
     await drainOutbox();
     const { handlers } = makeWorker();
     expect(await processOneRow(workerPool, handlers)).toEqual({ status: 'idle' });
-    const { rows } = await owner.query<{ n: number }>(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE usename = 'ledger_worker' AND state = 'idle in transaction'`);
+    // Asked as ledger_worker: Postgres shows a session's `state` only to its own
+    // role (or a superuser). Asked as the owner, `state` is NULL and this check
+    // could never fail.
+    const { rows } = await workerPool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM pg_stat_activity WHERE usename = 'ledger_worker' AND state = 'idle in transaction'`,
+    );
     expect(rows[0]!.n).toBe(0);
   });
 });
