@@ -1,5 +1,6 @@
 import type { Pool } from '../db.js';
 import { failTopup, findSettlementAccount, postTopup } from '../ledger/topup.js';
+import { enqueueOutbox } from '../outbox/enqueue.js';
 
 /** A webhook that passed signature verification and basic shape validation. */
 export interface ParsedWebhookEvent {
@@ -9,6 +10,8 @@ export interface ParsedWebhookEvent {
     paymentId: string;
     amountPaise?: string | undefined;
     currency?: string | undefined;
+    /** Our top-up id, echoed back by the provider. */
+    reference?: string | undefined;
   };
 }
 
@@ -32,8 +35,11 @@ interface PendingTopupRow {
   account_id: string;
   currency: string;
   amount_paise: bigint;
+  provider_payment_id: string | null;
   status: string;
 }
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Apply one webhook event to the ledger, exactly once.
@@ -66,16 +72,27 @@ export async function processWebhookEvent(
       return { duplicate: true };
     }
 
-    // 2. Find and lock the top-up this payment belongs to.
+    // 2. Find and lock the top-up this payment belongs to: by paymentId, or by
+    //    our own reference (the top-up id) when the worker has not recorded the
+    //    paymentId yet (it crashed between calling the provider and writing it).
+    const reference = event.data.reference && UUID.test(event.data.reference) ? event.data.reference : null;
     const { rows } = await client.query<PendingTopupRow>(
-      `SELECT t.transaction_id, t.account_id, t.currency, t.amount_paise, tx.status
+      `SELECT t.transaction_id, t.account_id, t.currency, t.amount_paise, t.provider_payment_id, tx.status
          FROM topups t
          JOIN transactions tx ON tx.id = t.transaction_id
         WHERE t.provider_payment_id = $1
+           OR ($2::uuid IS NOT NULL AND t.transaction_id = $2::uuid)
+        ORDER BY (t.provider_payment_id = $1) DESC NULLS LAST
           FOR UPDATE OF tx`,
-      [event.data.paymentId],
+      [event.data.paymentId, reference],
     );
-    const topup = rows[0];
+    let topup = rows[0];
+    let referenceConflict: string | null = null;
+    if (topup && topup.provider_payment_id !== null && topup.provider_payment_id !== event.data.paymentId) {
+      // Matched by reference only, but that top-up already belongs to another payment.
+      referenceConflict = `reference ${reference} is top-up ${topup.transaction_id}, which has payment ${topup.provider_payment_id}, not ${event.data.paymentId}`;
+      topup = undefined;
+    }
 
     // 3. Decide.
     let result: WebhookResult;
@@ -84,7 +101,7 @@ export async function processWebhookEvent(
       // Unknown payment: acknowledge, keep the evidence, investigate on our side.
       // A 4xx/5xx would only make the provider retry something that can never match.
       result = 'unmatched';
-      detail = `no top-up with provider_payment_id ${event.data.paymentId}`;
+      detail = referenceConflict ?? `no top-up with provider_payment_id ${event.data.paymentId}${reference ? ` or reference ${reference}` : ''}`;
     } else if (event.type !== 'payment.succeeded' && event.type !== 'payment.failed') {
       result = 'ignored_unknown_type';
       detail = `event type ${event.type} is not handled`;
@@ -95,6 +112,14 @@ export async function processWebhookEvent(
       detail = `top-up is already ${topup.status}`;
     } else if (event.type === 'payment.failed') {
       await failTopup(client, topup.transaction_id);
+      await enqueueOutbox(client, 'topup.failed', {
+        topupId: topup.transaction_id,
+        accountId: topup.account_id,
+        currency: topup.currency,
+        amountPaise: topup.amount_paise.toString(),
+        providerPaymentId: event.data.paymentId,
+        webhookEventId: event.id,
+      });
       result = 'failed';
     } else if (
       event.data.amountPaise === undefined ||
@@ -121,6 +146,15 @@ export async function processWebhookEvent(
         settlementAccountId,
         currency: topup.currency,
         amountPaise: topup.amount_paise,
+      });
+      // Same transaction as the entries: the event cannot exist without the money, nor vice versa.
+      await enqueueOutbox(client, 'topup.posted', {
+        topupId: topup.transaction_id,
+        accountId: topup.account_id,
+        currency: topup.currency,
+        amountPaise: topup.amount_paise.toString(),
+        providerPaymentId: event.data.paymentId,
+        webhookEventId: event.id,
       });
       result = 'posted';
     }

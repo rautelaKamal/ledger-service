@@ -15,6 +15,7 @@ const WebhookEventSchema = z.object({
     paymentId: z.string().min(1).max(255),
     amountPaise: z.string().regex(/^[0-9]+$/).optional(),
     currency: z.string().length(3).optional(),
+    reference: z.string().max(255).optional(),
   }),
 });
 
