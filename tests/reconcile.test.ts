@@ -4,7 +4,6 @@
 // ledger on purpose (as the owner, who can) and checks that every problem is
 // listed and the process exits non-zero.
 
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -20,6 +19,7 @@ import { MemorySink } from '../src/worker/sinks.js';
 import { createAccount, fundAccount } from './helpers.js';
 import { TEST_WEBHOOK_SECRET, startTestServer, type TestServer } from './http.js';
 import { resetLedger } from './reset.js';
+import { exitOf, spawnTs } from './spawn.js';
 
 let app: Pool;
 let owner: Pool;
@@ -50,11 +50,11 @@ afterAll(async () => {
 async function runCli(env: Record<string, string> = {}): Promise<{ code: number | null; stdout: string; report: ReconcileReport }> {
   const dir = await mkdtemp(join(tmpdir(), 'reconcile-'));
   const out = join(dir, 'report.json');
-  const child = spawn('npx', ['tsx', 'src/reconcile/main.ts', '--out', out], { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawnTs('src/reconcile/main.ts', ['--out', out], env);
   let stdout = '';
   child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
   child.stderr.on('data', (d: Buffer) => (stdout += d.toString()));
-  const code = await new Promise<number | null>((r) => child.on('exit', r));
+  const { code } = await exitOf(child);
   return { code, stdout, report: JSON.parse(await readFile(out, 'utf8')) as ReconcileReport };
 }
 

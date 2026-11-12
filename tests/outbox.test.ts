@@ -5,7 +5,6 @@
 // in-process, and the worker is driven with tick(). Test 8 spawns the real
 // worker process. afterEach checks every account reconciles.
 
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
@@ -21,6 +20,7 @@ import { MemorySink, type NotificationSink } from '../src/worker/sinks.js';
 import { balanceOf, createAccount, expectLedgerReconciles, fundAccount, withRollback } from './helpers.js';
 import { TEST_WEBHOOK_SECRET, startTestServer, type TestServer } from './http.js';
 import { resetLedger } from './reset.js';
+import { exitWithin, spawnTs } from './spawn.js';
 
 let app: Pool; // ledger_app
 let owner: Pool; // ledger_owner
@@ -114,6 +114,22 @@ async function enqueueEvents(n: number): Promise<string> {
   return tag;
 }
 const tagged = (tag: string, extra = 'TRUE'): [string, unknown[]] => [`payload->>'tag' = $1 AND (${extra})`, [tag]];
+
+/**
+ * How many database sessions with this application_name are still connected.
+ * A process that exits closes its sockets, but the server notices a moment
+ * later, so poll for up to 2 s before giving the final answer.
+ */
+async function sessionsNamed(appName: string): Promise<number> {
+  let n = 0;
+  for (let i = 0; i < 20; i++) {
+    const { rows } = await workerPool.query<{ n: number }>('SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name = $1', [appName]);
+    n = rows[0]!.n;
+    if (n === 0) return 0;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return n;
+}
 
 /** Drain the outbox with a throwaway worker so the next test starts clean. */
 async function drainOutbox(): Promise<void> {
@@ -338,9 +354,14 @@ describe('transactional outbox and worker', () => {
       const sinkUrl = `http://127.0.0.1:${(slowSink.address() as { port: number }).port}/notifications`;
       const tag = await enqueueEvents(5);
 
-      const child = spawn('npx', ['tsx', 'src/worker/main.ts'], {
-        env: { ...process.env, NOTIFICATION_SINK_URL: sinkUrl, PROVIDER_URL: 'http://127.0.0.1:9', WORKER_POLL_INTERVAL_MS: '100' },
-        stdio: ['ignore', 'pipe', 'pipe'],
+      // The worker tags its database sessions (node-postgres reads PGAPPNAME), so
+      // we can check afterwards that the process is really gone, not orphaned.
+      const appName = `test8-worker-${randomUUID().slice(0, 8)}`;
+      const child = spawnTs('src/worker/main.ts', [], {
+        NOTIFICATION_SINK_URL: sinkUrl,
+        PROVIDER_URL: 'http://127.0.0.1:9',
+        WORKER_POLL_INTERVAL_MS: '100',
+        PGAPPNAME: appName,
       });
       let output = '';
       child.stdout.on('data', (d: Buffer) => (output += d.toString()));
@@ -350,16 +371,22 @@ describe('transactional outbox and worker', () => {
         // Wait until the first delivery is in flight, then ask the worker to stop.
         await new Promise<void>((r) => (firstDelivery = r));
         child.kill('SIGTERM');
-        const exitCode = await new Promise<number | null>((r) => child.on('exit', r));
+        const exit = await exitWithin(child, 10_000);
 
-        expect(exitCode).toBe(0);
+        // It EXITED with 0, within 10 s. It was not killed by the signal (signal
+        // would be 'SIGTERM') and it is not still running ('still running').
+        expect(exit, output).toEqual({ code: 0, signal: null });
         expect(output).toContain('SIGTERM received: finishing the current row');
         expect(output).toContain('stopped cleanly');
         expect(received).toHaveLength(1); // the in-flight row was finished, no new row taken
         expect(await outboxRows(...tagged(tag, `status = 'sent'`))).toHaveLength(1);
         expect(await outboxRows(...tagged(tag, `status = 'pending'`))).toHaveLength(4);
+        // And nothing is left behind: no session of that worker is still connected.
+        // (Queried as ledger_worker: application_name is visible to any role, but
+        // only the same role sees a session's state.)
+        expect(await sessionsNamed(appName)).toBe(0);
       } finally {
-        if (child.exitCode === null) child.kill('SIGKILL');
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
         slowSink.closeAllConnections();
         await new Promise<void>((r) => slowSink.close(() => r()));
         await drainOutbox();
