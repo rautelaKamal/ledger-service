@@ -365,7 +365,9 @@ describe('logs', () => {
 
     expect(lines.find((l) => l.msg === 'webhook')).toMatchObject({ event_id: event.id, event_type: 'payment.succeeded', result: 'unmatched' });
     expect(lines.filter((l) => l.msg === 'webhook rejected').map((l) => l.reason)).toEqual(['signature_mismatch', 'missing_header']);
+    // Neither the genuine signature nor the forged one: signatures are never logged.
     expect(raw).not.toContain(signature.split('v1=')[1]!);
+    expect(raw).not.toContain(signWebhook('forger', rawBody, t).split('v1=')[1]!);
     expect(raw).not.toContain(TEST_WEBHOOK_SECRET);
     expect(raw).not.toContain(marker);
     expect(raw).not.toContain(rawBody);
