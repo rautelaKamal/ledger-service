@@ -242,25 +242,37 @@ describe('transactional outbox and worker', () => {
     const [row] = await outboxRows(...tagged(tag));
     const sink = new MemorySink();
     sink.failAlways = new Error('downstream is on fire');
-    const options: WorkerOptions = { maxAttempts: 3, backoffBaseMs: 40, random: () => 0.5 }; // jitter factor exactly 1.0
+    const options: WorkerOptions = { maxAttempts: 3, backoffBaseMs: 400, random: () => 0.5 }; // jitter factor exactly 1.0
     const { worker } = makeWorker({ sink, options });
+    // How far in the future the row is due, measured on the DATABASE's clock only.
+    // (Comparing a database timestamp with Date.now() mixes two clocks: Postgres
+    // runs in Docker's VM, whose clock drifts a few ms from the host's.)
+    const msUntilDue = async (): Promise<number> => {
+      const { rows } = await owner.query<{ ms: number }>(
+        `SELECT round(extract(epoch FROM available_at - clock_timestamp()) * 1000)::int AS ms FROM outbox WHERE payload->>'tag' = $1`,
+        [tag],
+      );
+      return rows[0]!.ms;
+    };
 
-    // attempt 1 -> retry in 40 ms
-    let t0 = Date.now();
+    // attempt 1 -> retry in 400 ms (base * 2^0)
     expect(await worker.tick()).toMatchObject([{ status: 'retry', id: row!.id, error: 'Error: downstream is on fire' }]);
+    let due = await msUntilDue();
+    expect(due).toBeGreaterThan(300); // pushed into the future by the backoff ...
+    expect(due).toBeLessThanOrEqual(400); // ... and by no more than the backoff
     let [after] = await outboxRows(...tagged(tag));
     expect(after).toMatchObject({ status: 'pending', attempts: 1, last_error: 'Error: downstream is on fire' });
-    expect(after!.available_at.getTime()).toBeGreaterThan(t0); // pushed into the future
     expect(await worker.tick()).toEqual([]); // not due yet: nothing processed
-    await new Promise((r) => setTimeout(r, 60));
+    await new Promise((r) => setTimeout(r, due + 50));
 
-    // attempt 2 -> retry in 80 ms
-    t0 = Date.now();
+    // attempt 2 -> retry in 800 ms (base * 2^1): the delay doubled
     expect(await worker.tick()).toMatchObject([{ status: 'retry', id: row!.id }]);
+    due = await msUntilDue();
+    expect(due).toBeGreaterThan(700);
+    expect(due).toBeLessThanOrEqual(800);
     [after] = await outboxRows(...tagged(tag));
     expect(after).toMatchObject({ status: 'pending', attempts: 2 });
-    expect(after!.available_at.getTime() - t0).toBeGreaterThanOrEqual(70);
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, due + 50));
 
     // attempt 3 -> dead, never silently dropped
     expect(await worker.tick()).toMatchObject([{ status: 'dead', id: row!.id }]);
