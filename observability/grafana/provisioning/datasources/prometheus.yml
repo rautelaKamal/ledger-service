@@ -1,0 +1,13 @@
+# Grafana reads this at start-up: Prometheus is the default datasource.
+# The fixed uid lets the dashboard JSON refer to it.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 5s
