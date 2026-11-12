@@ -44,3 +44,16 @@ export function exitWithin(child: ChildProcessWithoutNullStreams, ms: number): P
   });
   return Promise.race([exitOf(child), timeout]).finally(() => clearTimeout(timer));
 }
+
+/** A TCP port that was free a moment ago (for child processes that need a fixed PORT). */
+export async function freePort(): Promise<number> {
+  const { createServer } = await import('node:net');
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as { port: number };
+      server.close(() => resolve(port));
+    });
+  });
+}
