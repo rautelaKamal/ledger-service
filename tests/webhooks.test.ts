@@ -5,24 +5,26 @@
 // afterEach checks every account reconciles. Tests run as ledger_app except
 // where noted.
 
-import { createServer, type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
 import { MockProvider, type WebhookEvent } from '../mock-provider/provider.js';
 import { signWebhook } from '../mock-provider/signature.js';
 import { createPool, type Pool } from '../src/db.js';
 import { transfer } from '../src/ledger/transfer.js';
-import { HttpProviderClient, type ProviderClient } from '../src/provider/client.js';
+import { createHandlers } from '../src/worker/handlers.js';
+import { Worker } from '../src/worker/run.js';
+import { MemorySink } from '../src/worker/sinks.js';
 import { PG, balanceOf, createAccount, expectLedgerReconciles, fundAccount } from './helpers.js';
 import { TEST_WEBHOOK_SECRET, startTestServer, type HttpResult, type TestServer } from './http.js';
 import { resetLedger } from './reset.js';
 
 let app: Pool; // ledger_app
 let owner: Pool; // ledger_owner
+let workerPool: Pool; // ledger_worker
 let server: TestServer;
 let provider: MockProvider;
-/** Lets one test swap the provider the app talks to (for the "provider hangs" test). */
-let currentProvider: ProviderClient;
+/** Since step 5 the API only queues the provider call; this worker performs it (in-process, via tick()). */
+let worker: Worker;
 /** Lets one test make the next webhook commit fail. */
 let failNextCommit: Error | null = null;
 
@@ -33,13 +35,16 @@ const nowSeconds = (): number => Math.floor(Date.now() / 1000);
 beforeAll(async () => {
   app = createPool(process.env.DATABASE_URL!, { max: 20 });
   owner = createPool(process.env.OWNER_DATABASE_URL!, { max: 2 });
+  workerPool = createPool(process.env.WORKER_DATABASE_URL!, { max: 2 });
   await resetLedger(owner);
 
   provider = new MockProvider({ secret: TEST_WEBHOOK_SECRET, webhookUrl: 'set-after-listen', retry: { attempts: 4, baseDelayMs: 50 } });
-  currentProvider = { createPayment: async (input) => ({ paymentId: provider.createPayment(input).id }) };
+  worker = new Worker(
+    workerPool,
+    createHandlers({ provider: { createPayment: async (input) => ({ paymentId: provider.createPayment(input).id }) }, sink: new MemorySink() }),
+  );
 
   server = await startTestServer(app, {
-    provider: { createPayment: (input) => currentProvider.createPayment(input) },
     testHooks: {
       beforeWebhookCommit: async () => {
         if (failNextCommit) {
@@ -62,6 +67,7 @@ afterAll(async () => {
   await server.close();
   await app.end();
   await owner.end();
+  await workerPool.end();
 });
 
 // ───────────── helpers ─────────────
@@ -75,11 +81,16 @@ async function postTopup(accountId: string, amountPaise: string, key = newKey())
   return { status: res.status, headers: res.headers, json: await res.json() };
 }
 
-/** Start a top-up and return everything a test needs to confirm it. */
+/**
+ * Start a top-up and return everything a test needs to confirm it.
+ * Step 5: the API only queues the provider call, so one worker tick runs here
+ * to make the call and record the paymentId, as the real worker would.
+ */
 async function startTopup(accountId: string, amountPaise = '25000'): Promise<{ topupId: string; paymentId: string }> {
   const res = await postTopup(accountId, amountPaise);
   expect(res.status).toBe(202);
   const { topupId } = res.json as { topupId: string };
+  await worker.tick();
   const { rows } = await owner.query<{ provider_payment_id: string }>(
     'SELECT provider_payment_id FROM topups WHERE transaction_id = $1',
     [topupId],
@@ -140,11 +151,17 @@ describe('top-ups and provider webhooks', () => {
     expect(await balanceOf(app, account)).toBe(0n);
     expect(await settlementBalance()).toBe(bankBefore);
 
-    // The provider knows about it, with our id as the reference.
-    const { rows } = await owner.query<{ provider_payment_id: string }>(
-      'SELECT provider_payment_id FROM topups WHERE transaction_id = $1',
+    // Step 5: the request did NOT call the provider. It queued the call.
+    expect(provider.paymentsForReference(topupId)).toHaveLength(0);
+    const queued = await owner.query<{ status: string; payload: { topupId: string } }>(
+      `SELECT status, payload FROM outbox WHERE type = 'provider.create_payment' AND payload->>'topupId' = $1`,
       [topupId],
     );
+    expect(queued.rows).toMatchObject([{ status: 'pending', payload: { topupId } }]);
+
+    // After one worker tick the provider knows about it, with our id as the reference.
+    await worker.tick();
+    const { rows } = await owner.query<{ provider_payment_id: string }>('SELECT provider_payment_id FROM topups WHERE transaction_id = $1', [topupId]);
     expect(provider.getPayment(rows[0]!.provider_payment_id)).toMatchObject({ amountPaise: '25000', currency: 'INR', reference: topupId });
   });
 
@@ -324,40 +341,6 @@ describe('top-ups and provider webhooks', () => {
     await expectLedgerReconciles(owner);
     const { rows } = await owner.query<{ n: number }>('SELECT count(*)::int AS n FROM webhook_events');
     expect(rows[0]!.n).toBeGreaterThan(5); // the ledger has been busy
-  });
-
-  test('12. a provider that hangs longer than the timeout gives 502, stores nothing, and the retry works', async () => {
-    const account = await createAccount(app, 'user');
-    const key = newKey();
-    const before = await owner.query<{ tx: number; topups: number; keys: number }>(
-      `SELECT (SELECT count(*)::int FROM transactions) AS tx, (SELECT count(*)::int FROM topups) AS topups,
-              (SELECT count(*)::int FROM idempotency_keys) AS keys`,
-    );
-
-    // A provider that accepts the connection and never answers.
-    const hanging: Server = createServer(() => {});
-    await new Promise<void>((r) => hanging.listen(0, r));
-    const port = (hanging.address() as { port: number }).port;
-    const normal = currentProvider;
-    currentProvider = new HttpProviderClient(`http://127.0.0.1:${port}`, 500); // 500 ms instead of the 3 s default
-    try {
-      const started = Date.now();
-      const res = await postTopup(account, '25000', key);
-      expect(Date.now() - started).toBeGreaterThanOrEqual(450);
-      expect(res.status).toBe(502);
-      expect(res.json).toMatchObject({ error: { code: 'provider_unavailable' } });
-    } finally {
-      currentProvider = normal;
-      hanging.closeAllConnections();
-      await new Promise<void>((r) => hanging.close(() => r()));
-    }
-
-    const after = await owner.query('SELECT (SELECT count(*)::int FROM transactions) AS tx, (SELECT count(*)::int FROM topups) AS topups, (SELECT count(*)::int FROM idempotency_keys) AS keys');
-    expect(after.rows[0]).toEqual(before.rows[0]); // nothing stored
-
-    const retry = await postTopup(account, '25000', key); // same key, provider back
-    expect(retry.status).toBe(202);
-    expect(retry.headers.get('idempotent-replayed')).toBeNull();
   });
 
   test('13. top-ups are refused for unknown, system and unsupported-currency accounts, storing nothing', async () => {
