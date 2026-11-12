@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { Router } from 'express';
 import { z } from 'zod';
 import type { Pool } from '../db.js';
+import { logger } from '../logger.js';
+import { resultLabel, type ApiMetrics } from '../metrics.js';
 import {
   IdempotencyKeyBusyError,
   IdempotencyKeyReusedError,
@@ -43,7 +45,7 @@ export function transferRequestHash(body: TransferBody): string {
   return createHash('sha256').update(`POST\n/transfers\n${canonical}`).digest('hex');
 }
 
-export function transfersRouter(pool: Pool, options: IdempotentOptions = {}): Router {
+export function transfersRouter(pool: Pool, metrics: ApiMetrics, options: IdempotentOptions = {}): Router {
   const router = Router();
 
   router.post('/transfers', async (req, res) => {
@@ -83,18 +85,30 @@ export function transfersRouter(pool: Pool, options: IdempotentOptions = {}): Ro
         options,
       );
 
-      if (result.replayed) res.setHeader('Idempotent-Replayed', 'true');
+      if (result.replayed) {
+        res.setHeader('Idempotent-Replayed', 'true');
+        metrics.idempotencyReplays.inc({ route: '/transfers' });
+        logger.info({ status: result.status, replayed: true }, 'transfer replayed from idempotency key');
+      } else {
+        const outcome = resultLabel(result.status, result.body);
+        metrics.transfers.inc({ result: outcome });
+        const transactionId = (result.body as { transactionId?: string }).transactionId;
+        logger.info({ result: outcome, ...(transactionId ? { transaction_id: transactionId } : {}) }, 'transfer');
+      }
       res.status(result.status).json(result.body);
     } catch (err) {
       if (err instanceof IdempotencyKeyReusedError) {
+        metrics.idempotencyRejections.inc({ route: '/transfers', reason: 'key_reused' });
         res.status(422).json(errorBody('idempotency_key_reused', err.message));
         return;
       }
       if (err instanceof IdempotencyKeyBusyError) {
+        metrics.idempotencyRejections.inc({ route: '/transfers', reason: 'key_busy' });
         res.setHeader('Retry-After', '1');
         res.status(409).json(errorBody('request_in_progress', err.message));
         return;
       }
+      metrics.transfers.inc({ result: 'error' });
       throw err; // -> the app's error handler -> 500
     }
   });

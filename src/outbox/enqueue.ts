@@ -1,3 +1,4 @@
+import { currentRequestId } from '../context.js';
 import type { PoolClient } from '../db.js';
 
 /** The kinds of work the outbox carries. Must match the CHECK in migration 005. */
@@ -18,7 +19,13 @@ export interface OutboxPayloads {
  * change exists without its side effect queued, or the side effect is queued for
  * a change that never happened. The worker performs it later, outside any
  * ledger transaction. Amounts travel as strings (never JS numbers).
+ *
+ * The id of the request that caused this row (if any) travels in the payload as
+ * `requestId`, so the worker can log the same id when it performs the side
+ * effect: one transfer can be followed from the HTTP request to its notification.
  */
 export async function enqueueOutbox<T extends OutboxType>(client: PoolClient, type: T, payload: OutboxPayloads[T]): Promise<void> {
-  await client.query(`INSERT INTO outbox (type, payload) VALUES ($1, $2::jsonb)`, [type, JSON.stringify(payload)]);
+  const requestId = currentRequestId();
+  const withContext = requestId ? { ...payload, requestId } : payload;
+  await client.query(`INSERT INTO outbox (type, payload) VALUES ($1, $2::jsonb)`, [type, JSON.stringify(withContext)]);
 }
