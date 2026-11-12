@@ -10,6 +10,9 @@ export default defineConfig({
     // All test files share ONE database (ledger_test). Running files in
     // parallel would let one file see (or wipe) another file's rows.
     fileParallelism: false,
+    // Application logs (pino) are silent in tests, so the test output stays readable.
+    // Tests that check log lines capture them with useLogger() instead.
+    env: { LOG_LEVEL: 'silent' },
     include: ['tests/**/*.test.ts'],
   },
 });
