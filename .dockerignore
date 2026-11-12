@@ -1,0 +1,26 @@
+# Only what the image build needs gets sent to Docker. In particular, NO env
+# files and NO secrets: configuration reaches containers at run time
+# (docker-compose.full.yml, Kubernetes later), never at build time.
+.env
+.env.*
+!.env.example
+!.env.test.example
+.git
+.github
+.DS_Store
+node_modules
+dist
+coverage
+*.log
+reconcile-report.json
+
+# Not needed in any image
+tests
+docs
+load
+observability
+db
+docker-compose*.yml
+scripts/demo-*.ts
+vitest.config.ts
+README.md
