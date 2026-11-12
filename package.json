@@ -21,6 +21,9 @@
     "reconcile": "tsx --env-file=.env src/reconcile/main.ts",
     "demo:outbox": "tsx --env-file=.env scripts/demo-outbox.ts",
     "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "stack:up": "docker compose -f docker-compose.full.yml up -d --build --wait",
+    "stack:down": "docker compose -f docker-compose.full.yml down",
     "test": "vitest run"
   },
   "dependencies": {
