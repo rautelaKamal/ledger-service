@@ -5,12 +5,9 @@ import { topupsRouter } from './http/topups.js';
 import { transfersRouter } from './http/transfers.js';
 import { webhooksRouter } from './http/webhooks.js';
 import type { IdempotentOptions } from './idempotency.js';
-import type { ProviderClient } from './provider/client.js';
 import type { WebhookTestHooks } from './webhooks/process.js';
 
 export interface AppOptions extends IdempotentOptions {
-  /** How we ask the payment provider for a payment (HTTP in production, in-process in tests). */
-  provider: ProviderClient;
   /** Shared secret the provider signs webhooks with (WEBHOOK_SECRET). */
   webhookSecret: string;
   /** Test-only fault injection. Only reachable through this option: never env, never a request. */
@@ -45,7 +42,7 @@ export function createApp(pool: Pool, options: AppOptions): express.Express {
 
   const idempotency = { ...(options.keyClaimTimeoutMs !== undefined ? { keyClaimTimeoutMs: options.keyClaimTimeoutMs } : {}) };
   app.use(transfersRouter(pool, idempotency));
-  app.use(topupsRouter(pool, options.provider, idempotency));
+  app.use(topupsRouter(pool, idempotency));
 
   // Last resort. Express 5 routes rejected promises here automatically.
   const errorHandler: express.ErrorRequestHandler = (err, _req, res, _next) => {

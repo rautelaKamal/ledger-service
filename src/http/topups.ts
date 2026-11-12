@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { Pool } from '../db.js';
 import { IdempotencyKeyBusyError, IdempotencyKeyReusedError, runIdempotent, type IdempotentOptions } from '../idempotency.js';
 import { findSettlementAccount } from '../ledger/topup.js';
-import { ProviderError, type ProviderClient } from '../provider/client.js';
+import { enqueueOutbox } from '../outbox/enqueue.js';
 import { errorBody } from './errors.js';
 import { readIdempotencyHeaders } from './idempotency-headers.js';
 
@@ -23,13 +23,14 @@ export function topupRequestHash(body: TopupBody): string {
 }
 
 /**
- * POST /topups: start a top-up. No money moves here.
+ * POST /topups: start a top-up. No money moves here, and no provider is called here.
  *
- * Creates a 'topup' transaction (pending, no entries), asks the provider for a
- * payment, records the link, answers 202. The money is credited only when the
- * provider confirms by webhook (see POST /webhooks/provider).
+ * Creates a 'topup' transaction (pending, no entries), the topups row (without a
+ * paymentId yet) and an outbox command 'provider.create_payment', all in one
+ * transaction, then answers 202. The outbox worker calls the provider and records
+ * the paymentId; the money is credited only when the provider confirms by webhook.
  */
-export function topupsRouter(pool: Pool, provider: ProviderClient, options: IdempotentOptions = {}): Router {
+export function topupsRouter(pool: Pool, options: IdempotentOptions = {}): Router {
   const router = Router();
 
   router.post('/topups', async (req, res) => {
@@ -75,22 +76,22 @@ export function topupsRouter(pool: Pool, provider: ProviderClient, options: Idem
           );
           const topupId = inserted.rows[0]!.id;
 
-          // Ask the provider. This network call runs INSIDE the database
-          // transaction (connection held, idempotency key locked) with a 3 s
-          // timeout. Trade-off and the step-5 fix: see STEP-04-EXPLAINED.
-          // Failure throws ProviderError -> everything rolls back -> 502,
-          // nothing stored, the client retries with the same key.
-          const { paymentId } = await provider.createPayment({
-            amountPaise: BigInt(body.amountPaise),
-            currency: account.currency,
-            reference: topupId,
-          });
-
+          // The link to the provider, without a paymentId yet: the worker fills
+          // it in (once) after it has talked to the provider.
           await client.query(
-            `INSERT INTO topups (transaction_id, account_id, currency, amount_paise, provider_payment_id)
-             VALUES ($1, $2, $3, $4, $5)`,
-            [topupId, account.id, account.currency, BigInt(body.amountPaise), paymentId],
+            `INSERT INTO topups (transaction_id, account_id, currency, amount_paise)
+             VALUES ($1, $2, $3, $4)`,
+            [topupId, account.id, account.currency, BigInt(body.amountPaise)],
           );
+
+          // The side effect, queued in the same transaction instead of performed
+          // here. No network call holds this connection or the idempotency key.
+          await enqueueOutbox(client, 'provider.create_payment', {
+            topupId,
+            accountId: account.id,
+            currency: account.currency,
+            amountPaise: body.amountPaise,
+          });
 
           return { status: 202, body: { topupId, status: 'pending' }, transactionId: topupId };
         },
@@ -100,10 +101,6 @@ export function topupsRouter(pool: Pool, provider: ProviderClient, options: Idem
       if (result.replayed) res.setHeader('Idempotent-Replayed', 'true');
       res.status(result.status).json(result.body);
     } catch (err) {
-      if (err instanceof ProviderError) {
-        res.status(502).json(errorBody('provider_unavailable', `${err.message}; nothing was stored, retry with the same key`));
-        return;
-      }
       if (err instanceof IdempotencyKeyReusedError) {
         res.status(422).json(errorBody('idempotency_key_reused', err.message));
         return;

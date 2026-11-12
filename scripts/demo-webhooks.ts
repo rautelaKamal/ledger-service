@@ -11,6 +11,9 @@ import { MockProvider } from '../mock-provider/provider.js';
 import { signWebhook } from '../mock-provider/signature.js';
 import { createApp } from '../src/app.js';
 import { createPool, type Pool } from '../src/db.js';
+import { createHandlers } from '../src/worker/handlers.js';
+import { Worker } from '../src/worker/run.js';
+import { MemorySink } from '../src/worker/sinks.js';
 
 const RUN_TAG = `demo-webhooks ${new Date().toISOString()}`;
 const SECRET = process.env.WEBHOOK_SECRET ?? 'demo-webhook-secret-not-for-production';
@@ -41,10 +44,18 @@ async function main(): Promise<void> {
     retry: { attempts: 3, baseDelayMs: 200 },
     log: (line) => console.log(`      [provider] ${line}`),
   });
-  const server = createApp(app, {
-    provider: { createPayment: async (input) => ({ paymentId: provider.createPayment(input).id }) },
-    webhookSecret: SECRET,
-  }).listen(0);
+  const server = createApp(app, { webhookSecret: SECRET }).listen(0);
+  // Since step 5 the API only queues the provider call; an outbox worker makes it.
+  const workerUrl = process.env.WORKER_DATABASE_URL;
+  if (!workerUrl) {
+    console.error('WORKER_DATABASE_URL must be set');
+    process.exit(1);
+  }
+  const workerPool = createPool(workerUrl, { max: 2 });
+  const worker = new Worker(
+    workerPool,
+    createHandlers({ provider: { createPayment: async (input) => ({ paymentId: provider.createPayment(input).id }) }, sink: new MemorySink() }),
+  );
   await new Promise<void>((resolve) => server.once('listening', resolve));
   const address = server.address();
   const url = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`;
@@ -68,7 +79,9 @@ async function main(): Promise<void> {
     });
     const body = (await res.json()) as { topupId: string; status: string };
     console.log(`   -> ${res.status} ${JSON.stringify(body)}`);
-    console.log(`   balance now ${rupees(await balance(app, user))}   (nothing credited: the provider has not confirmed)\n`);
+    console.log(`   balance now ${rupees(await balance(app, user))}   (nothing credited: the provider has not confirmed)`);
+    await worker.tick(); // the outbox worker asks the provider for the payment
+    console.log(`   (outbox worker called the provider and recorded the paymentId)\n`);
     const paymentId = (await owner.query<{ provider_payment_id: string }>('SELECT provider_payment_id FROM topups WHERE transaction_id = $1', [body.topupId])).rows[0]!.provider_payment_id;
 
     // 2. The provider confirms... five times.
@@ -107,6 +120,7 @@ async function main(): Promise<void> {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await app.end();
     await owner.end();
+    await workerPool.end();
   }
 }
 
