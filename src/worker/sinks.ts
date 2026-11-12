@@ -1,3 +1,5 @@
+import { currentRequestId } from '../context.js';
+
 // Where outbox EVENTS go ('transfer.posted', 'topup.posted', 'topup.failed').
 // Today a stand-in; later a queue, a webhook to another service, an analytics
 // pipeline. Whatever it is, it receives each event AT LEAST once and must
@@ -79,7 +81,12 @@ export class HttpNotificationSink implements NotificationSink {
     try {
       res = await fetch(this.url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'outbox-id': event.outboxId },
+        headers: {
+          'content-type': 'application/json',
+          'outbox-id': event.outboxId,
+          // The id of the request that caused this event: the end of the trail.
+          ...(currentRequestId() ? { 'x-request-id': currentRequestId()! } : {}),
+        },
         body: JSON.stringify({ outboxId: event.outboxId, type: event.type, payload: event.payload, createdAt: event.createdAt.toISOString() }),
         signal: AbortSignal.timeout(this.timeoutMs),
       });

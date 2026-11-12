@@ -1,4 +1,6 @@
+import { runWithRequestId } from '../context.js';
 import type { Pool } from '../db.js';
+import { logger } from '../logger.js';
 import type { Handlers, OutboxRow } from './handlers.js';
 
 export interface WorkerOptions {
@@ -11,6 +13,8 @@ export interface WorkerOptions {
   handlerTimeoutMs?: number;
   /** Injected randomness so tests can make backoff deterministic. */
   random?: () => number;
+  /** Called after each processed row (metrics hook): outcome, row, handler time in seconds. */
+  onOutcome?: (outcome: RowOutcome, row: OutboxRow, handlerSeconds: number) => void;
   /** Test-only fault injection, reachable only through this option. */
   testHooks?: {
     /** Runs after the handler and the bookkeeping UPDATE, right before COMMIT. Throwing simulates a crash. */
@@ -71,12 +75,24 @@ export async function processOneRow(pool: Pool, handlers: Handlers, options: Wor
       return { status: 'idle' };
     }
 
+    // The request that queued this row stored its id in the payload; run the
+    // handler under the same id, so its logs and outgoing calls (X-Request-Id to
+    // the provider / sink) share it. Rows queued outside a request get "outbox-<id>".
+    const requestId = (row.payload as { requestId?: unknown } | null)?.requestId;
+    const contextId = typeof requestId === 'string' ? requestId : `outbox-${row.id}`;
+
     await client.query('SAVEPOINT handler');
     let outcome: RowOutcome;
+    const handlerStarted = process.hrtime.bigint();
+    let handlerSeconds = 0;
     try {
       const handler = handlers[row.type];
       if (!handler) throw new Error(`no handler for outbox type ${row.type}`);
-      await withTimeout(handler(row, client), handlerTimeoutMs, `handler for ${row.type}`);
+      try {
+        await runWithRequestId(contextId, () => withTimeout(handler(row, client), handlerTimeoutMs, `handler for ${row.type}`));
+      } finally {
+        handlerSeconds = Number(process.hrtime.bigint() - handlerStarted) / 1e9;
+      }
       await client.query('RELEASE SAVEPOINT handler');
       await client.query(`UPDATE outbox SET status = 'sent', sent_at = now() WHERE id = $1`, [row.id]);
       outcome = { status: 'sent', id: row.id, type: row.type };
@@ -104,6 +120,18 @@ export async function processOneRow(pool: Pool, handlers: Handlers, options: Wor
     if (options.testHooks?.beforeCommit) await options.testHooks.beforeCommit(row);
     await client.query('COMMIT');
     options.log?.(`outbox ${row.id} ${row.type}: ${outcome.status}${outcome.error ? ` (${outcome.error})` : ''}`);
+    options.onOutcome?.(outcome, row, handlerSeconds);
+    const line = {
+      request_id: contextId,
+      outbox_id: row.id.toString(),
+      type: row.type,
+      outcome: outcome.status,
+      attempts: outcome.status === 'sent' ? row.attempts : row.attempts + 1,
+      duration_ms: Math.round(handlerSeconds * 1000),
+      ...(outcome.error ? { error: outcome.error } : {}),
+    };
+    if (outcome.status === 'sent') logger.info(line, 'outbox row handled');
+    else logger.warn(line, 'outbox row failed');
     return outcome;
   } catch (err) {
     try {
