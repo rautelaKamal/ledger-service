@@ -1,4 +1,4 @@
-// The ledger's view of the payment provider: the one call we make to it.
+// The worker's view of the payment provider: the one call we make to it.
 // The mock provider (mock-provider/) implements the same shape in-process for
 // tests and demos; HttpProviderClient talks to it (or a real one) over HTTP.
 
@@ -7,6 +7,12 @@ export interface CreatePaymentInput {
   currency: string;
   /** Our id for this top-up, echoed back in webhooks so an orphan payment can be traced. */
   reference: string;
+  /**
+   * The outbox worker may call us twice for the same top-up (at-least-once
+   * delivery). The provider must return the SAME payment for the same key, so we
+   * send the top-up id. Exactly what step 3 did for our own clients.
+   */
+  idempotencyKey: string;
 }
 
 export interface CreatePaymentResult {
@@ -17,7 +23,7 @@ export interface ProviderClient {
   createPayment(input: CreatePaymentInput): Promise<CreatePaymentResult>;
 }
 
-/** The provider was unreachable, too slow, or answered with an error. HTTP 502 for our caller. */
+/** The provider was unreachable, too slow, or answered with an error. The outbox row is retried. */
 export class ProviderError extends Error {
   override name = 'ProviderError';
 }
@@ -35,10 +41,9 @@ export class HttpProviderClient implements ProviderClient {
     try {
       res = await fetch(`${this.baseUrl}/payments`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'idempotency-key': input.idempotencyKey },
         body: JSON.stringify({ amountPaise: input.amountPaise.toString(), currency: input.currency, reference: input.reference }),
-        // The call runs inside a database transaction that holds a connection and
-        // (soon) row locks, so it must not be allowed to hang.
+        // The worker holds an outbox row lock while this runs; it must not hang.
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {

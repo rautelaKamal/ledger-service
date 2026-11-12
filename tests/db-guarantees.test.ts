@@ -28,15 +28,21 @@ import {
 
 let app: Pool; // connected as ledger_app
 let owner: Pool; // connected as ledger_owner
+let worker: Pool; // connected as ledger_worker (step 5)
+let reconciler: Pool; // connected as ledger_reconciler (step 5)
 
 beforeAll(() => {
   app = createPool(process.env.DATABASE_URL!);
   owner = createPool(process.env.OWNER_DATABASE_URL!);
+  worker = createPool(process.env.WORKER_DATABASE_URL!, { max: 2 });
+  reconciler = createPool(process.env.RECONCILER_DATABASE_URL!, { max: 2 });
 });
 
 afterAll(async () => {
   await app.end();
   await owner.end();
+  await worker.end();
+  await reconciler.end();
 });
 
 describe('database guarantees', () => {
@@ -390,14 +396,15 @@ describe('database guarantees', () => {
 
   // ─────────────── Step 4: topups and webhook_events (migration 004) ───────────────
 
+  // Step 5: the API inserts the topups row WITHOUT a paymentId; the worker records it later, once.
   async function pendingTopup(): Promise<{ transactionId: string; accountId: string }> {
     const accountId = await createAccount(app, 'user');
     const { rows } = await app.query<{ id: string }>(`INSERT INTO transactions (kind) VALUES ('topup') RETURNING id`);
     await app.query(
-      `INSERT INTO topups (transaction_id, account_id, currency, amount_paise, provider_payment_id)
-       VALUES ($1, $2, 'INR', 100, $3)`,
-      [rows[0]!.id, accountId, `pay_${rows[0]!.id}`],
+      `INSERT INTO topups (transaction_id, account_id, currency, amount_paise) VALUES ($1, $2, 'INR', 100)`,
+      [rows[0]!.id, accountId],
     );
+    await worker.query('UPDATE topups SET provider_payment_id = $2 WHERE transaction_id = $1', [rows[0]!.id, `pay_${rows[0]!.id}`]);
     return { transactionId: rows[0]!.id, accountId };
   }
 
@@ -412,7 +419,7 @@ describe('database guarantees', () => {
     });
     await expect(owner.query('UPDATE topups SET amount_paise = 1 WHERE transaction_id = $1', [transactionId])).rejects.toMatchObject({
       code: PG.RAISE_EXCEPTION,
-      message: expect.stringMatching(/topups are append-only: UPDATE/),
+      message: expect.stringMatching(/topups are append-only/),
     });
     await expect(owner.query('DELETE FROM topups WHERE transaction_id = $1', [transactionId])).rejects.toMatchObject({
       code: PG.RAISE_EXCEPTION,
@@ -448,8 +455,8 @@ describe('database guarantees', () => {
 
     await expect(
       app.query(
-        `INSERT INTO topups (transaction_id, account_id, currency, amount_paise, provider_payment_id, created_at)
-         VALUES ($1, $2, 'INR', 100, 'pay_backdated', '2020-01-01')`,
+        `INSERT INTO topups (transaction_id, account_id, currency, amount_paise, created_at)
+         VALUES ($1, $2, 'INR', 100, '2020-01-01')`,
         [rows[0]!.id, accountId],
       ),
     ).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
@@ -474,34 +481,23 @@ describe('database guarantees', () => {
     // not a top-up
     const transferTx = await createTransaction(app, 'transfer');
     await expect(
-      app.query(
-        `INSERT INTO topups (transaction_id, account_id, currency, amount_paise, provider_payment_id)
-         VALUES ($1, $2, 'INR', 100, 'pay_on_transfer')`,
-        [transferTx, accountId],
-      ),
+      app.query(`INSERT INTO topups (transaction_id, account_id, currency, amount_paise) VALUES ($1, $2, 'INR', 100)`, [transferTx, accountId]),
     ).rejects.toMatchObject({ code: PG.RAISE_EXCEPTION, message: expect.stringMatching(/kind topup, not transfer/) });
 
     // a top-up that is already final
     const failedTx = await createTransaction(app, 'topup');
     await app.query(`UPDATE transactions SET status = 'failed' WHERE id = $1`, [failedTx]);
     await expect(
-      app.query(
-        `INSERT INTO topups (transaction_id, account_id, currency, amount_paise, provider_payment_id)
-         VALUES ($1, $2, 'INR', 100, 'pay_on_failed')`,
-        [failedTx, accountId],
-      ),
+      app.query(`INSERT INTO topups (transaction_id, account_id, currency, amount_paise) VALUES ($1, $2, 'INR', 100)`, [failedTx, accountId]),
     ).rejects.toMatchObject({ code: PG.RAISE_EXCEPTION, message: expect.stringMatching(/while its transaction is pending, not failed/) });
 
-    // one payment id, two top-ups
+    // one payment id, two top-ups (the worker records the id; the second recording collides)
     const { transactionId } = await pendingTopup();
     const { rows } = await app.query<{ provider_payment_id: string }>('SELECT provider_payment_id FROM topups WHERE transaction_id = $1', [transactionId]);
     const another = await createTransaction(app, 'topup');
+    await app.query(`INSERT INTO topups (transaction_id, account_id, currency, amount_paise) VALUES ($1, $2, 'INR', 100)`, [another, accountId]);
     await expect(
-      app.query(
-        `INSERT INTO topups (transaction_id, account_id, currency, amount_paise, provider_payment_id)
-         VALUES ($1, $2, 'INR', 100, $3)`,
-        [another, accountId, rows[0]!.provider_payment_id],
-      ),
+      worker.query('UPDATE topups SET provider_payment_id = $2 WHERE transaction_id = $1', [another, rows[0]!.provider_payment_id]),
     ).rejects.toMatchObject({ code: PG.UNIQUE_VIOLATION, constraint: 'topups_provider_payment_id_key' });
   });
 
@@ -511,5 +507,148 @@ describe('database guarantees', () => {
     ).rejects.toMatchObject({ code: PG.UNIQUE_VIOLATION, constraint: 'accounts_one_bank_settlement_per_currency' });
     // A USER account may be called anything, including bank_settlement.
     await createAccount(app, 'user', 'INR', 'bank_settlement');
+  });
+
+  // ─────────────── Step 5: outbox, roles, reconciliation_runs (migration 005) ───────────────
+
+  test('24. each role can do only its own job on the outbox: app inserts, worker marks, reconciler reads', async () => {
+    // app: may queue work, may not see or touch it
+    const queued = await app.query(`INSERT INTO outbox (type, payload) VALUES ('transfer.posted', '{"t":1}')`);
+    expect(queued.rowCount).toBe(1);
+    await expect(app.query('SELECT id FROM outbox')).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+    await expect(app.query(`UPDATE outbox SET status = 'sent', sent_at = now()`)).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+    await expect(app.query(`INSERT INTO outbox (type, payload, status) VALUES ('transfer.posted', '{}', 'sent')`)).rejects.toMatchObject({
+      code: PG.INSUFFICIENT_PRIVILEGE,
+    });
+
+    // worker: may read and mark, may not create work or touch the ledger
+    const { rows } = await worker.query<{ id: bigint }>(`SELECT id FROM outbox WHERE status = 'pending' ORDER BY id DESC LIMIT 1`);
+    const id = rows[0]!.id;
+    await expect(worker.query(`INSERT INTO outbox (type, payload) VALUES ('transfer.posted', '{}')`)).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+    await expect(worker.query(`UPDATE outbox SET payload = '{}' WHERE id = $1`, [id])).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+    await expect(worker.query('SELECT 1 FROM accounts')).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+    await expect(worker.query('SELECT 1 FROM entries')).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+    await expect(worker.query(`UPDATE accounts SET balance_paise = 0`)).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+    const marked = await worker.query(`UPDATE outbox SET status = 'sent', sent_at = now() WHERE id = $1`, [id]);
+    expect(marked.rowCount).toBe(1);
+
+    // reconciler: may read everything it checks, may not change anything
+    for (const table of ['accounts', 'entries', 'transactions', 'topups', 'webhook_events', 'outbox']) {
+      await reconciler.query(`SELECT 1 FROM ${table} LIMIT 1`);
+    }
+    await expect(reconciler.query(`UPDATE outbox SET status = 'dead', last_error = 'x' WHERE id = $1`, [id])).rejects.toMatchObject({
+      code: PG.INSUFFICIENT_PRIVILEGE,
+    });
+    await expect(reconciler.query(`UPDATE topups SET provider_payment_id = 'x'`)).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+    await expect(reconciler.query(`INSERT INTO outbox (type, payload) VALUES ('transfer.posted', '{}')`)).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+  });
+
+  test('25. an outbox row is frozen once sent or dead, attempts never decrease, and only sent rows may be deleted', async () => {
+    const ids = await owner.query<{ id: bigint }>(
+      `INSERT INTO outbox (type, payload) VALUES ('transfer.posted', '{"a":1}'), ('transfer.posted', '{"a":2}'), ('transfer.posted', '{"a":3}') RETURNING id`,
+    );
+    const [pending, toSend, toDie] = ids.rows.map((r) => r.id);
+
+    // bookkeeping on a pending row is fine, but attempts only go up and the facts are immutable
+    await worker.query(`UPDATE outbox SET attempts = 2, last_error = 'boom', available_at = now() + interval '1 minute' WHERE id = $1`, [pending]);
+    await expect(worker.query(`UPDATE outbox SET attempts = 1 WHERE id = $1`, [pending])).rejects.toMatchObject({
+      code: PG.RAISE_EXCEPTION,
+      message: expect.stringMatching(/attempts cannot decrease/),
+    });
+    await expect(owner.query(`UPDATE outbox SET payload = '{"a":9}' WHERE id = $1`, [pending])).rejects.toMatchObject({
+      code: PG.RAISE_EXCEPTION,
+      message: expect.stringMatching(/immutable/),
+    });
+
+    // sent: frozen
+    await worker.query(`UPDATE outbox SET status = 'sent', sent_at = now() WHERE id = $1`, [toSend]);
+    await expect(worker.query(`UPDATE outbox SET status = 'pending', sent_at = NULL WHERE id = $1`, [toSend])).rejects.toMatchObject({
+      code: PG.RAISE_EXCEPTION,
+      message: expect.stringMatching(/already sent/),
+    });
+    // dead: needs a reason, then frozen
+    await expect(worker.query(`UPDATE outbox SET status = 'dead' WHERE id = $1`, [toDie])).rejects.toMatchObject({
+      code: PG.CHECK_VIOLATION,
+      constraint: 'outbox_dead_has_error',
+    });
+    await worker.query(`UPDATE outbox SET status = 'dead', attempts = 8, last_error = 'gave up' WHERE id = $1`, [toDie]);
+    await expect(owner.query(`UPDATE outbox SET status = 'pending' WHERE id = $1`, [toDie])).rejects.toMatchObject({
+      code: PG.RAISE_EXCEPTION,
+      message: expect.stringMatching(/already dead/),
+    });
+
+    // delete: nobody but the owner has the grant, and even the owner only for sent rows
+    await expect(worker.query('DELETE FROM outbox WHERE id = $1', [toSend])).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+    await expect(owner.query('DELETE FROM outbox WHERE id = $1', [pending])).rejects.toMatchObject({
+      code: PG.RAISE_EXCEPTION,
+      message: expect.stringMatching(/cannot be deleted/),
+    });
+    await expect(owner.query('DELETE FROM outbox WHERE id = $1', [toDie])).rejects.toMatchObject({ code: PG.RAISE_EXCEPTION });
+    expect((await owner.query('DELETE FROM outbox WHERE id = $1', [toSend])).rowCount).toBe(1);
+  });
+
+  test("26. a top-up's paymentId can be recorded exactly once, by the worker, and nothing else about it can change", async () => {
+    const accountId = await createAccount(app, 'user');
+    const { rows } = await app.query<{ id: string }>(`INSERT INTO transactions (kind) VALUES ('topup') RETURNING id`);
+    const topupId = rows[0]!.id;
+    await app.query(`INSERT INTO topups (transaction_id, account_id, currency, amount_paise) VALUES ($1, $2, 'INR', 100)`, [topupId, accountId]);
+
+    // the API cannot record it at all
+    await expect(app.query(`UPDATE topups SET provider_payment_id = 'pay_app' WHERE transaction_id = $1`, [topupId])).rejects.toMatchObject({
+      code: PG.INSUFFICIENT_PRIVILEGE,
+    });
+    // the worker can, once
+    expect((await worker.query(`UPDATE topups SET provider_payment_id = 'pay_first' WHERE transaction_id = $1`, [topupId])).rowCount).toBe(1);
+    await expect(worker.query(`UPDATE topups SET provider_payment_id = 'pay_second' WHERE transaction_id = $1`, [topupId])).rejects.toMatchObject({
+      code: PG.RAISE_EXCEPTION,
+      message: expect.stringMatching(/only provider_payment_id may be set, once/),
+    });
+    // and nothing else, even combined with the permitted write, even by the owner
+    await expect(
+      owner.query(`UPDATE topups SET provider_payment_id = 'pay_x', amount_paise = 1 WHERE transaction_id = $1`, [topupId]),
+    ).rejects.toMatchObject({ code: PG.RAISE_EXCEPTION });
+    await expect(owner.query(`UPDATE topups SET provider_payment_id = NULL WHERE transaction_id = $1`, [topupId])).rejects.toMatchObject({
+      code: PG.RAISE_EXCEPTION,
+    });
+  });
+
+  test('27. reconciliation_runs are append-only and ok must agree with the problems list', async () => {
+    const inserted = await reconciler.query<{ id: bigint }>(
+      `INSERT INTO reconciliation_runs (ok, duration_ms, summary, problems) VALUES (true, 12, '{"account_balances":0}', '[]') RETURNING id`,
+    );
+    const id = inserted.rows[0]!.id;
+
+    await expect(
+      reconciler.query(`INSERT INTO reconciliation_runs (ok, duration_ms, summary, problems) VALUES (true, 1, '{}', '[{"check":"x"}]')`),
+    ).rejects.toMatchObject({ code: PG.CHECK_VIOLATION, constraint: 'reconciliation_runs_ok_matches_problems' });
+    await expect(
+      reconciler.query(`INSERT INTO reconciliation_runs (ok, duration_ms, summary, problems, ran_at) VALUES (true, 1, '{}', '[]', '2020-01-01')`),
+    ).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+    await expect(reconciler.query(`UPDATE reconciliation_runs SET ok = false WHERE id = $1`, [id])).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+    await expect(owner.query(`UPDATE reconciliation_runs SET ok = false WHERE id = $1`, [id])).rejects.toMatchObject({
+      code: PG.RAISE_EXCEPTION,
+      message: expect.stringMatching(/append-only: UPDATE/),
+    });
+    await expect(owner.query(`DELETE FROM reconciliation_runs WHERE id = $1`, [id])).rejects.toMatchObject({
+      code: PG.RAISE_EXCEPTION,
+      message: expect.stringMatching(/append-only: DELETE/),
+    });
+    await expect(app.query('SELECT 1 FROM reconciliation_runs')).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+  });
+
+  test('28. the database fills outbox timing columns; the app and worker cannot choose them', async () => {
+    await expect(app.query(`INSERT INTO outbox (type, payload, available_at) VALUES ('transfer.posted', '{}', '2030-01-01')`)).rejects.toMatchObject({
+      code: PG.INSUFFICIENT_PRIVILEGE,
+    });
+    await expect(app.query(`INSERT INTO outbox (type, payload, created_at) VALUES ('transfer.posted', '{}', '2020-01-01')`)).rejects.toMatchObject({
+      code: PG.INSUFFICIENT_PRIVILEGE,
+    });
+    await app.query(`INSERT INTO outbox (type, payload) VALUES ('transfer.posted', '{"fresh":true}')`);
+    const { rows } = await worker.query<{ fresh: boolean; status: string; attempts: number }>(
+      `SELECT created_at > now() - interval '5 seconds' AND available_at <= now() AS fresh, status, attempts
+         FROM outbox WHERE payload->>'fresh' = 'true' ORDER BY id DESC LIMIT 1`,
+    );
+    expect(rows[0]).toEqual({ fresh: true, status: 'pending', attempts: 0 });
+    await expect(worker.query(`UPDATE outbox SET created_at = now() WHERE payload->>'fresh' = 'true'`)).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
   });
 });

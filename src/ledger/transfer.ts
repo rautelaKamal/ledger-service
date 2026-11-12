@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from '../db.js';
+import { enqueueOutbox } from '../outbox/enqueue.js';
 import { lockAccounts } from './locks.js';
 
 export interface TransferInput {
@@ -142,6 +143,18 @@ export async function transferWithClient(client: PoolClient, input: TransferInpu
   // Prevents: entries existing for a transaction that is not posted (the
   // deferred rule 6 would reject the COMMIT otherwise).
   await client.query(`UPDATE transactions SET status = 'posted' WHERE id = $1`, [transactionId]);
+
+  // Step 8b: queue the 'transfer.posted' event for the outbox worker, in THIS
+  // transaction. If the COMMIT below fails, the event vanishes with the transfer;
+  // if it succeeds, the event is guaranteed to exist. Nobody is notified from here.
+  // Prevents: "money moved but nobody was told" and "told, but money never moved".
+  await enqueueOutbox(client, 'transfer.posted', {
+    transactionId,
+    fromAccountId: from.id,
+    toAccountId: to.id,
+    currency: from.currency,
+    amountPaise: input.amountPaise.toString(),
+  });
 
   return { transactionId };
 }

@@ -6,13 +6,6 @@ import type { Pool } from '../src/db.js';
 export const TEST_KEY_CLAIM_TIMEOUT_MS = 1_000;
 export const TEST_WEBHOOK_SECRET = 'test-webhook-secret-not-for-production';
 
-/** Tests that never top up get a provider that refuses to be called. */
-const noProvider: AppOptions['provider'] = {
-  createPayment: async () => {
-    throw new Error('this test did not configure a payment provider');
-  },
-};
-
 export interface TestServer {
   url: string;
   close(): Promise<void>;
@@ -22,7 +15,6 @@ export interface TestServer {
 export async function startTestServer(pool: Pool, options: Partial<AppOptions> = {}): Promise<TestServer> {
   const app = createApp(pool, {
     keyClaimTimeoutMs: TEST_KEY_CLAIM_TIMEOUT_MS,
-    provider: noProvider,
     webhookSecret: TEST_WEBHOOK_SECRET,
     ...options,
   });

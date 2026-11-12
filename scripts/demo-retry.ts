@@ -96,10 +96,7 @@ async function main(): Promise<void> {
   const app = createPool(appUrl);
   const owner = createPool(ownerUrl, { max: 2 });
   // This demo never tops up, so it needs no real provider or webhook secret.
-  const server = createApp(app, {
-    provider: { createPayment: async () => { throw new Error('not used in this demo'); } },
-    webhookSecret: 'demo-retry-unused-webhook-secret',
-  }).listen(0);
+  const server = createApp(app, { webhookSecret: 'demo-retry-unused-webhook-secret' }).listen(0);
   await new Promise<void>((resolve) => server.once('listening', resolve));
   const address = server.address();
   const url = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`;

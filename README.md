@@ -15,8 +15,11 @@ npm install
 cp .env.example .env && cp .env.test.example .env.test
 npm run db:up        # Postgres 17 in Docker; first start creates roles + databases
 npm run migrate      # applies migrations/*.sql to the `ledger` database
-npm test             # migrates + truncates `ledger_test`, then runs the DB guarantee tests
+npm test             # migrates + truncates `ledger_test`, then runs every test
 ```
+
+If your database volume predates step 5, create the two new roles first:
+`npm run db:roles` (safe to re-run), then `npm run migrate`.
 
 Then `npm run dev` starts the API on http://localhost:3000. `GET /health` returns 200 when
 the database is reachable.
@@ -27,12 +30,16 @@ the database is reachable.
 | ------------------- | -------------------------------------------------------------- |
 | `npm run db:up`     | Start Postgres and wait until it is healthy                    |
 | `npm run db:down`   | Stop Postgres (data is kept in the `ledger_pgdata` volume)     |
+| `npm run db:roles`  | (Re)create the database roles on an existing volume; idempotent |
 | `npm run migrate`   | Apply new SQL migrations as `ledger_owner`                     |
 | `npm run dev`       | Run the API with auto-reload                                   |
 | `npm run demo:race` | Watch two concurrency bugs happen, then `transfer()` avoid them |
 | `npm run demo:retry`| Send one transfer 5 times with one key, then with 5 keys        |
 | `npm run demo:webhooks` | One top-up, confirmed 5 times plus one forged webhook       |
-| `npm run provider`  | Run the mock payment provider on port 4100                     |
+| `npm run provider`  | Run the mock payment provider + notification sink on port 4100 |
+| `npm run worker`    | Run the outbox worker (several copies may run at once)         |
+| `npm run reconcile` | Check the books; exit 1 and list problems if anything is off   |
+| `npm run demo:outbox` | A top-up whose worker is killed mid-flight, then recovers    |
 | `npm run typecheck` | TypeScript type check, no output files                         |
 | `npm test`          | Run the tests against the real `ledger_test` database          |
 
@@ -85,18 +92,20 @@ A top-up is **not** credited when requested. It is credited when the payment pro
 confirms it by a signed webhook. Locally the provider is `mock-provider/` (`npm run provider`).
 
 ```bash
-# Terminal 1: database, API, mock provider
+# Terminals: database, API, mock provider (+ notification sink), outbox worker
 npm run db:up && npm run migrate
 npm run dev
 npm run provider          # separate terminal; reads PROVIDER_PORT / WEBHOOK_SECRET / LEDGER_WEBHOOK_URL from .env
+npm run worker            # separate terminal; calls the provider and delivers events (reads WORKER_* / PROVIDER_URL / NOTIFICATION_SINK_URL)
 
 # 1. Ask for a top-up of ₹250.00 (same headers as /transfers). Nothing is credited yet.
 curl -i -X POST http://localhost:3000/topups \
   -H 'Content-Type: application/json' -H 'X-Client-Id: demo' -H "Idempotency-Key: $(uuidgen)" \
   -d '{"accountId":"<user account uuid>","amountPaise":"25000"}'
 #   202 { "topupId": "<uuid>", "status": "pending" }
+#   The request did not call the provider; the worker does, within a second.
 
-# 2. Find the provider's paymentId for it
+# 2. Find the provider's paymentId for it (recorded by the worker)
 psql "$DATABASE_URL" -c "select provider_payment_id from topups where transaction_id = '<topupId>'"
 
 # 3. Tell the mock provider the payment succeeded; it sends the signed webhook to the API
@@ -108,9 +117,8 @@ curl -X POST http://localhost:4100/payments/<paymentId>/succeed -H 'Content-Type
 
 | Status (POST /topups) | When |
 |---|---|
-| `202 { topupId, status: "pending" }` | top-up recorded, provider asked; money arrives by webhook |
+| `202 { topupId, status: "pending" }` | top-up recorded and the provider call queued; money arrives by webhook |
 | `404` / `422` | unknown account; not a user account; currency with no settlement account |
-| `502` | provider unreachable or slower than 3 s; nothing stored, retry with the same key |
 
 | Status (POST /webhooks/provider) | When |
 |---|---|
@@ -121,7 +129,8 @@ curl -X POST http://localhost:4100/payments/<paymentId>/succeed -H 'Content-Type
 | `500` | unexpected; everything rolled back, the provider retries |
 
 `WEBHOOK_SECRET` must be the same value for the API and the provider. See
-[docs/STEP-04-EXPLAINED.md](docs/STEP-04-EXPLAINED.md).
+[docs/STEP-04-EXPLAINED.md](docs/STEP-04-EXPLAINED.md) and, for the worker and reconciliation,
+[docs/STEP-05-EXPLAINED.md](docs/STEP-05-EXPLAINED.md).
 
 ## Port 5432 already in use?
 
