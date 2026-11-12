@@ -26,7 +26,7 @@ export async function checkAccountBalances(db: Db): Promise<Problem[]> {
   return rows.map((r) => ({
     check: 'account_balances',
     id: r.account_id,
-    detail: `cached balance ${r.cached_paise} paise, entries say ${r.computed_paise}`,
+    detail: `"${r.account_name}": cached balance ${r.cached_paise} paise, entries say ${r.computed_paise}`,
   }));
 }
 

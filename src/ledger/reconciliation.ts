@@ -9,13 +9,14 @@ import type { Pool, PoolClient } from '../db.js';
 // An empty result means the ledger reconciles.
 export const UNRECONCILED_ACCOUNTS_SQL = `
   SELECT a.id            AS account_id,
+         a.name          AS account_name,
          a.balance_paise AS cached_paise,
          COALESCE(SUM(CASE e.direction WHEN 'credit' THEN e.amount_paise ELSE -e.amount_paise END)
                     FILTER (WHERE t.status = 'posted'), 0)::bigint AS computed_paise
     FROM accounts a
     LEFT JOIN entries e      ON e.account_id = a.id
     LEFT JOIN transactions t ON t.id = e.transaction_id
-   GROUP BY a.id
+   GROUP BY a.id, a.name
   HAVING a.balance_paise <> COALESCE(SUM(CASE e.direction WHEN 'credit' THEN e.amount_paise ELSE -e.amount_paise END)
                                        FILTER (WHERE t.status = 'posted'), 0)
    ORDER BY a.id
@@ -23,6 +24,7 @@ export const UNRECONCILED_ACCOUNTS_SQL = `
 
 export interface UnreconciledAccount {
   account_id: string;
+  account_name: string;
   cached_paise: bigint;
   computed_paise: bigint;
 }
