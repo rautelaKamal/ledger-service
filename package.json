@@ -10,12 +10,16 @@
   "scripts": {
     "db:up": "docker compose up -d --wait",
     "db:down": "docker compose down",
+    "db:roles": "docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f - < db/init/00-roles.sql",
     "migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
     "dev": "tsx watch --env-file=.env src/server.ts",
     "demo:race": "tsx --env-file=.env scripts/demo-race.ts",
     "demo:retry": "tsx --env-file=.env scripts/demo-retry.ts",
     "demo:webhooks": "tsx --env-file=.env scripts/demo-webhooks.ts",
     "provider": "tsx --env-file=.env mock-provider/server.ts",
+    "worker": "tsx --env-file=.env src/worker/main.ts",
+    "reconcile": "tsx --env-file=.env src/reconcile/main.ts",
+    "demo:outbox": "tsx --env-file=.env scripts/demo-outbox.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
