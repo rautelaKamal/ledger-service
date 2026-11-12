@@ -45,6 +45,8 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 export class MockProvider {
   private readonly payments = new Map<string, ProviderPayment>();
+  /** Idempotency-Key -> payment id: a repeated key returns the SAME payment. */
+  private readonly paymentsByKey = new Map<string, string>();
   readonly secret: string;
   webhookUrl: string;
   private readonly retry: { attempts: number; baseDelayMs: number };
@@ -57,8 +59,16 @@ export class MockProvider {
     this.log = options.log ?? (() => {});
   }
 
-  /** What the ledger calls (POST /payments). */
-  createPayment(input: { amountPaise: string | bigint; currency: string; reference: string }): ProviderPayment {
+  /**
+   * What the ledger's worker calls (POST /payments). With an idempotencyKey, a
+   * repeat of the same key returns the payment created the first time, which
+   * is what lets the worker safely retry after a crash.
+   */
+  createPayment(input: { amountPaise: string | bigint; currency: string; reference: string; idempotencyKey?: string }): ProviderPayment {
+    if (input.idempotencyKey) {
+      const existingId = this.paymentsByKey.get(input.idempotencyKey);
+      if (existingId) return this.payments.get(existingId)!;
+    }
     const payment: ProviderPayment = {
       id: `pay_${randomUUID().replace(/-/g, '')}`,
       amountPaise: input.amountPaise.toString(),
@@ -67,11 +77,17 @@ export class MockProvider {
       status: 'created',
     };
     this.payments.set(payment.id, payment);
+    if (input.idempotencyKey) this.paymentsByKey.set(input.idempotencyKey, payment.id);
     return payment;
   }
 
   getPayment(paymentId: string): ProviderPayment | undefined {
     return this.payments.get(paymentId);
+  }
+
+  /** All payments created for one of our top-up ids. Should always be 0 or 1. */
+  paymentsForReference(reference: string): ProviderPayment[] {
+    return [...this.payments.values()].filter((p) => p.reference === reference);
   }
 
   /** Build a new event (fresh id) describing an outcome. Does not send it. */

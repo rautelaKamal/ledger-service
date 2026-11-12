@@ -6,11 +6,13 @@
 //   POST /payments/:id/succeed   { times?, delayMs? }                  -> 202, then webhooks
 //   POST /payments/:id/fail      { times?, delayMs? }                  -> 202, then webhooks
 //   GET  /payments/:id                                                 -> the payment
+//   POST /notifications          (from the ledger's outbox worker)      -> 200, dedupes by Outbox-Id
 //
 // Call /fail then /succeed to produce out-of-order events; use times: 5 to
 // produce duplicates. Deliveries happen in the background with retries.
 import express from 'express';
 import { MockProvider } from './provider.js';
+import { SinkStore } from './sink.js';
 
 const port = Number(process.env.PROVIDER_PORT ?? 4100);
 const secret = process.env.WEBHOOK_SECRET;
@@ -21,8 +23,24 @@ if (!secret || !webhookUrl) {
 }
 
 const provider = new MockProvider({ secret, webhookUrl, log: (line) => console.log(`[provider] ${line}`) });
+const sink = new SinkStore();
 const app = express();
 app.use(express.json());
+
+// ── Notification sink: the downstream consumer of our outbox events ──
+// POST /payments comes with an Idempotency-Key from the worker; a repeated key
+// returns the same payment (see MockProvider.createPayment).
+app.post('/notifications', (req, res) => {
+  const outboxId = req.header('outbox-id') ?? (req.body as { outboxId?: string } | undefined)?.outboxId;
+  if (!outboxId) {
+    res.status(400).json({ error: 'Outbox-Id header is required' });
+    return;
+  }
+  const receipt = sink.record(outboxId, req.body);
+  const type = (req.body as { type?: string } | undefined)?.type ?? '?';
+  console.log(`[sink] outbox ${outboxId} ${type}${receipt.duplicate ? ' (duplicate, ignored)' : ''}  total ${sink.count}`);
+  res.status(200).json({ received: true, duplicate: receipt.duplicate });
+});
 
 app.post('/payments', (req, res) => {
   const { amountPaise, currency, reference } = (req.body ?? {}) as Record<string, unknown>;
@@ -30,8 +48,9 @@ app.post('/payments', (req, res) => {
     res.status(400).json({ error: 'amountPaise (digit string), currency and reference are required' });
     return;
   }
-  const payment = provider.createPayment({ amountPaise, currency, reference });
-  console.log(`[provider] payment ${payment.id} created: ${amountPaise} ${currency} (ref ${reference})`);
+  const idempotencyKey = req.header('idempotency-key');
+  const payment = provider.createPayment({ amountPaise, currency, reference, ...(idempotencyKey ? { idempotencyKey } : {}) });
+  console.log(`[provider] payment ${payment.id} for ${amountPaise} ${currency} (ref ${reference}, key ${idempotencyKey ?? 'none'})`);
   res.status(201).json({ paymentId: payment.id });
 });
 
