@@ -1,10 +1,17 @@
 import type { Server } from 'node:http';
-import { createApp } from '../src/app.js';
+import { createApp, type AppOptions } from '../src/app.js';
 import type { Pool } from '../src/db.js';
-import type { IdempotentOptions } from '../src/idempotency.js';
 
 /** Short key-claim timeout so the "duplicate gives up" test takes ~1 s, not 5 s. */
 export const TEST_KEY_CLAIM_TIMEOUT_MS = 1_000;
+export const TEST_WEBHOOK_SECRET = 'test-webhook-secret-not-for-production';
+
+/** Tests that never top up get a provider that refuses to be called. */
+const noProvider: AppOptions['provider'] = {
+  createPayment: async () => {
+    throw new Error('this test did not configure a payment provider');
+  },
+};
 
 export interface TestServer {
   url: string;
@@ -12,11 +19,13 @@ export interface TestServer {
 }
 
 /** Start the real Express app on a random free port. Uses Node's built-in fetch to talk to it. */
-export async function startTestServer(
-  pool: Pool,
-  options: IdempotentOptions = { keyClaimTimeoutMs: TEST_KEY_CLAIM_TIMEOUT_MS },
-): Promise<TestServer> {
-  const app = createApp(pool, options);
+export async function startTestServer(pool: Pool, options: Partial<AppOptions> = {}): Promise<TestServer> {
+  const app = createApp(pool, {
+    keyClaimTimeoutMs: TEST_KEY_CLAIM_TIMEOUT_MS,
+    provider: noProvider,
+    webhookSecret: TEST_WEBHOOK_SECRET,
+    ...options,
+  });
   const server: Server = await new Promise((resolve) => {
     const s = app.listen(0, () => resolve(s));
   });

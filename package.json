@@ -14,6 +14,8 @@
     "dev": "tsx watch --env-file=.env src/server.ts",
     "demo:race": "tsx --env-file=.env scripts/demo-race.ts",
     "demo:retry": "tsx --env-file=.env scripts/demo-retry.ts",
+    "demo:webhooks": "tsx --env-file=.env scripts/demo-webhooks.ts",
+    "provider": "tsx --env-file=.env mock-provider/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

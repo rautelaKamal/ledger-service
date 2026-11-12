@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from '../db.js';
+import { lockAccounts } from './locks.js';
 
 export interface TransferInput {
   fromAccountId: string;
@@ -31,13 +32,6 @@ export class InsufficientFundsError extends Error {
   override name = 'InsufficientFundsError';
 }
 
-// The shape of an account row as we read it in step 2 below.
-interface LockedAccount {
-  id: string;
-  currency: string;
-  balance_paise: bigint;
-}
-
 /**
  * Move `amountPaise` from one account to another, inside a transaction YOU own.
  *
@@ -65,32 +59,25 @@ export async function transferWithClient(client: PoolClient, input: TransferInpu
   }
 
   // Step 2: lock both account rows, always in ascending id order.
-  // `FOR UPDATE` makes this read wait for any other transfer that has these
+  // `FOR UPDATE` makes this read wait for any other operation that has these
   // rows locked, then returns the committed balances and keeps the rows
   // locked until our COMMIT. Nobody else can read-for-update or change them
   // in between.
   // Prevents: two transfers both reading "₹50 available" at the same moment
   // and both spending it (the lost update in test 4).
-  // `ORDER BY id` means every transfer, in either direction, takes the lock
-  // on the lower id first. Two transfers on the same pair therefore queue
-  // one behind the other, instead of each holding one row and waiting for
-  // the other's row forever.
+  // The ORDER BY id inside lockAccounts means every operation (transfers in
+  // either direction, top-ups) takes the lock on the lower id first, so two
+  // operations on the same accounts queue one behind the other instead of
+  // each holding one row and waiting for the other's row forever.
   // Prevents: the deadlock in test 5 (A->B holds A and wants B, while B->A
-  // holds B and wants A).
-  const { rows } = await client.query<LockedAccount>(
-    `SELECT id, currency, balance_paise
-       FROM accounts
-      WHERE id = ANY($1::uuid[])
-      ORDER BY id
-        FOR UPDATE`,
-    [[input.fromAccountId, input.toAccountId]],
-  );
+  // holds B and wants A), and the same between a transfer and a top-up.
+  const locked = await lockAccounts(client, [input.fromAccountId, input.toAccountId]);
 
   // Step 3: both accounts must exist and share one currency.
   // Prevents: moving money into a typo'd or deleted account, and turning
   // 100 USD into 100 INR by crediting the wrong currency.
-  const from = rows.find((r) => r.id === input.fromAccountId);
-  const to = rows.find((r) => r.id === input.toAccountId);
+  const from = locked.get(input.fromAccountId);
+  const to = locked.get(input.toAccountId);
   if (!from) {
     throw new AccountNotFoundError(`account ${input.fromAccountId} does not exist`);
   }

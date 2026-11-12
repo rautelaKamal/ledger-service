@@ -10,6 +10,7 @@ import {
 } from '../idempotency.js';
 import { transferWithClient } from '../ledger/transfer.js';
 import { errorBody, mapBusinessError } from './errors.js';
+import { readIdempotencyHeaders } from './idempotency-headers.js';
 
 // amountPaise is a STRING holding a positive integer, so the amount never
 // passes through a JS number (which silently rounds above 2^53). "0", "007",
@@ -27,8 +28,6 @@ const TransferBody = z
   .strict();
 
 type TransferBody = z.infer<typeof TransferBody>;
-
-const MAX_HEADER_LENGTH = 255;
 
 /**
  * The request fingerprint. Built from the VALIDATED body in a fixed key order,
@@ -48,19 +47,8 @@ export function transfersRouter(pool: Pool, options: IdempotentOptions = {}): Ro
   const router = Router();
 
   router.post('/transfers', async (req, res) => {
-    // X-Client-Id stands in for authentication until a later step adds the
-    // real thing; it is what idempotency keys are scoped to.
-    const clientId = req.header('x-client-id');
-    if (!clientId || clientId.length > MAX_HEADER_LENGTH) {
-      res.status(401).json(errorBody('missing_client_id', 'X-Client-Id header is required (1-255 chars)'));
-      return;
-    }
-
-    const key = req.header('idempotency-key');
-    if (!key || key.length > MAX_HEADER_LENGTH) {
-      res.status(400).json(errorBody('missing_idempotency_key', 'Idempotency-Key header is required (1-255 chars)'));
-      return;
-    }
+    const headers = readIdempotencyHeaders(req, res);
+    if (!headers) return;
 
     // A malformed body is not stored under the key: there is no well-formed
     // request to fingerprint, and nothing happened.
@@ -74,7 +62,7 @@ export function transfersRouter(pool: Pool, options: IdempotentOptions = {}): Ro
     try {
       const result = await runIdempotent(
         pool,
-        { clientId, key, requestHash: transferRequestHash(body) },
+        { ...headers, requestHash: transferRequestHash(body) },
         async (client) => {
           try {
             const { transactionId } = await transferWithClient(client, {

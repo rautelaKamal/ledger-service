@@ -387,4 +387,129 @@ describe('database guarantees', () => {
     );
     expect(rows[0]?.hours).toBe(24);
   });
+
+  // ─────────────── Step 4: topups and webhook_events (migration 004) ───────────────
+
+  async function pendingTopup(): Promise<{ transactionId: string; accountId: string }> {
+    const accountId = await createAccount(app, 'user');
+    const { rows } = await app.query<{ id: string }>(`INSERT INTO transactions (kind) VALUES ('topup') RETURNING id`);
+    await app.query(
+      `INSERT INTO topups (transaction_id, account_id, currency, amount_paise, provider_payment_id)
+       VALUES ($1, $2, 'INR', 100, $3)`,
+      [rows[0]!.id, accountId, `pay_${rows[0]!.id}`],
+    );
+    return { transactionId: rows[0]!.id, accountId };
+  }
+
+  test('19. topups are append-only: the app lacks the grants, and the trigger stops even the owner', async () => {
+    const { transactionId } = await pendingTopup();
+
+    await expect(app.query('UPDATE topups SET amount_paise = 1 WHERE transaction_id = $1', [transactionId])).rejects.toMatchObject({
+      code: PG.INSUFFICIENT_PRIVILEGE,
+    });
+    await expect(app.query('DELETE FROM topups WHERE transaction_id = $1', [transactionId])).rejects.toMatchObject({
+      code: PG.INSUFFICIENT_PRIVILEGE,
+    });
+    await expect(owner.query('UPDATE topups SET amount_paise = 1 WHERE transaction_id = $1', [transactionId])).rejects.toMatchObject({
+      code: PG.RAISE_EXCEPTION,
+      message: expect.stringMatching(/topups are append-only: UPDATE/),
+    });
+    await expect(owner.query('DELETE FROM topups WHERE transaction_id = $1', [transactionId])).rejects.toMatchObject({
+      code: PG.RAISE_EXCEPTION,
+      message: expect.stringMatching(/topups are append-only: DELETE/),
+    });
+  });
+
+  test('20. webhook_events are append-only: the app lacks the grants, and the trigger stops even the owner', async () => {
+    await owner.query(
+      `INSERT INTO webhook_events (provider_event_id, event_type, provider_payment_id, raw_body, result)
+       VALUES ('evt_frozen', 'payment.succeeded', 'pay_x', '{}', 'unmatched')`,
+    );
+
+    await expect(app.query(`UPDATE webhook_events SET result = 'posted' WHERE provider_event_id = 'evt_frozen'`)).rejects.toMatchObject({
+      code: PG.INSUFFICIENT_PRIVILEGE,
+    });
+    await expect(app.query(`DELETE FROM webhook_events WHERE provider_event_id = 'evt_frozen'`)).rejects.toMatchObject({
+      code: PG.INSUFFICIENT_PRIVILEGE,
+    });
+    await expect(owner.query(`UPDATE webhook_events SET result_detail = 'x' WHERE provider_event_id = 'evt_frozen'`)).rejects.toMatchObject({
+      code: PG.RAISE_EXCEPTION,
+      message: expect.stringMatching(/webhook_events are append-only: UPDATE/),
+    });
+    await expect(owner.query(`DELETE FROM webhook_events WHERE provider_event_id = 'evt_frozen'`)).rejects.toMatchObject({
+      code: PG.RAISE_EXCEPTION,
+      message: expect.stringMatching(/webhook_events are append-only: DELETE/),
+    });
+  });
+
+  test('21. the app cannot set created_at / received_at on topups or webhook_events; the database fills them', async () => {
+    const accountId = await createAccount(app, 'user');
+    const { rows } = await app.query<{ id: string }>(`INSERT INTO transactions (kind) VALUES ('topup') RETURNING id`);
+
+    await expect(
+      app.query(
+        `INSERT INTO topups (transaction_id, account_id, currency, amount_paise, provider_payment_id, created_at)
+         VALUES ($1, $2, 'INR', 100, 'pay_backdated', '2020-01-01')`,
+        [rows[0]!.id, accountId],
+      ),
+    ).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+    await expect(
+      app.query(
+        `INSERT INTO webhook_events (provider_event_id, event_type, provider_payment_id, raw_body, result, received_at)
+         VALUES ('evt_backdated', 'payment.succeeded', 'pay_x', '{}', 'unmatched', '2020-01-01')`,
+      ),
+    ).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+
+    const inserted = await app.query<{ fresh: boolean }>(
+      `INSERT INTO webhook_events (provider_event_id, event_type, provider_payment_id, raw_body, result)
+       VALUES ('evt_fresh', 'payment.succeeded', 'pay_x', '{}', 'unmatched')
+       RETURNING received_at > now() - interval '5 seconds' AS fresh`,
+    );
+    expect(inserted.rows[0]?.fresh).toBe(true);
+  });
+
+  test('22. a topups row can only point at a pending topup transaction, and a payment confirms at most one top-up', async () => {
+    const accountId = await createAccount(app, 'user');
+
+    // not a top-up
+    const transferTx = await createTransaction(app, 'transfer');
+    await expect(
+      app.query(
+        `INSERT INTO topups (transaction_id, account_id, currency, amount_paise, provider_payment_id)
+         VALUES ($1, $2, 'INR', 100, 'pay_on_transfer')`,
+        [transferTx, accountId],
+      ),
+    ).rejects.toMatchObject({ code: PG.RAISE_EXCEPTION, message: expect.stringMatching(/kind topup, not transfer/) });
+
+    // a top-up that is already final
+    const failedTx = await createTransaction(app, 'topup');
+    await app.query(`UPDATE transactions SET status = 'failed' WHERE id = $1`, [failedTx]);
+    await expect(
+      app.query(
+        `INSERT INTO topups (transaction_id, account_id, currency, amount_paise, provider_payment_id)
+         VALUES ($1, $2, 'INR', 100, 'pay_on_failed')`,
+        [failedTx, accountId],
+      ),
+    ).rejects.toMatchObject({ code: PG.RAISE_EXCEPTION, message: expect.stringMatching(/while its transaction is pending, not failed/) });
+
+    // one payment id, two top-ups
+    const { transactionId } = await pendingTopup();
+    const { rows } = await app.query<{ provider_payment_id: string }>('SELECT provider_payment_id FROM topups WHERE transaction_id = $1', [transactionId]);
+    const another = await createTransaction(app, 'topup');
+    await expect(
+      app.query(
+        `INSERT INTO topups (transaction_id, account_id, currency, amount_paise, provider_payment_id)
+         VALUES ($1, $2, 'INR', 100, $3)`,
+        [another, accountId, rows[0]!.provider_payment_id],
+      ),
+    ).rejects.toMatchObject({ code: PG.UNIQUE_VIOLATION, constraint: 'topups_provider_payment_id_key' });
+  });
+
+  test('23. there is at most one bank_settlement account per currency', async () => {
+    await expect(
+      owner.query(`INSERT INTO accounts (name, kind, currency) VALUES ('bank_settlement', 'system', 'INR')`),
+    ).rejects.toMatchObject({ code: PG.UNIQUE_VIOLATION, constraint: 'accounts_one_bank_settlement_per_currency' });
+    // A USER account may be called anything, including bank_settlement.
+    await createAccount(app, 'user', 'INR', 'bank_settlement');
+  });
 });
