@@ -197,21 +197,26 @@ describe('transactional outbox and worker', () => {
     expect(await outboxRows(`payload->>'topupId' = $1`, [topupId])).toMatchObject([{ status: 'sent' }]);
   });
 
-  test('4. two worker instances running at once never process the same row (SKIP LOCKED)', async () => {
+  test('4. two worker instances run at the same time without ever processing the same row (SKIP LOCKED)', async () => {
     await drainOutbox();
-    const tag = await enqueueEvents(30);
+    const tag = await enqueueEvents(20);
 
-    const a = makeWorker();
-    const b = makeWorker();
-    a.sink.delayMs = 5; // make the two overlap in time
-    b.sink.delayMs = 5;
-    await Promise.all([a.worker.tick(30), b.worker.tick(30)]);
+    // One shared sink so we can see both workers inside it at once.
+    const sink = new MemorySink();
+    sink.delayMs = 30;
+    const a = makeWorker({ sink });
+    const b = makeWorker({ sink });
+    const started = Date.now();
+    await Promise.all([a.worker.tick(20), b.worker.tick(20)]);
+    const elapsed = Date.now() - started;
 
-    const all = [...a.sink.deliveries, ...b.sink.deliveries];
-    expect(all).toHaveLength(30);
-    expect(new Set(all).size).toBe(30); // every row delivered exactly once, across both workers
-    expect(a.sink.deliveries.length).toBeGreaterThan(0); // and both actually shared the work
-    expect(b.sink.deliveries.length).toBeGreaterThan(0);
+    expect(sink.deliveries).toHaveLength(20);
+    expect(new Set(sink.deliveries).size).toBe(20); // every row delivered exactly once
+    // SKIP LOCKED is what makes them concurrent: a worker never waits for a row the
+    // other one holds, so two deliveries are in flight at once. With plain FOR UPDATE
+    // they would take turns (maxInFlight 1, ~20 x 30 ms).
+    expect(sink.maxInFlight).toBe(2);
+    expect(elapsed).toBeLessThan(20 * 30 * 0.8);
     expect(await outboxRows(...tagged(tag, `status <> 'sent'`))).toEqual([]);
   });
 

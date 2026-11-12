@@ -33,9 +33,22 @@ export class MemorySink implements NotificationSink {
   failAlways: Error | null = null;
   delayMs = 0;
   onDeliver: ((event: OutboxEvent) => void) | null = null;
+  /** How many deliveries are in progress right now, and the most there ever were at once. */
+  inFlight = 0;
+  maxInFlight = 0;
   private readonly seen = new Set<string>();
 
   async deliver(event: OutboxEvent): Promise<void> {
+    this.inFlight++;
+    this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
+    try {
+      await this.deliverInner(event);
+    } finally {
+      this.inFlight--;
+    }
+  }
+
+  private async deliverInner(event: OutboxEvent): Promise<void> {
     if (this.delayMs) await new Promise((r) => setTimeout(r, this.delayMs));
     if (this.failAlways) throw this.failAlways;
     if (this.failNext) {
