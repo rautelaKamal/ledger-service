@@ -1,9 +1,12 @@
 import { runWithRequestId } from '../context.js';
 import type { Pool } from '../db.js';
 import { logger } from '../logger.js';
+import { claimOrder, LANE_PREDICATE, type LaneSetting } from './lanes.js';
 import type { Handlers, OutboxRow } from './handlers.js';
 
 export interface WorkerOptions {
+  /** Which lane(s) this worker claims from. 'all' (default) = commands first, then events. */
+  lane?: LaneSetting;
   /** After this many failed attempts a row becomes 'dead' (dead-letter). */
   maxAttempts?: number;
   /** Backoff: min(base * 2^attempts, cap) * jitter, jitter uniform in [0.5, 1.5). */
@@ -61,15 +64,21 @@ export async function processOneRow(pool: Pool, handlers: Handlers, options: Wor
   let connectionBroken = false;
   try {
     await client.query('BEGIN');
-    const { rows } = await client.query<OutboxRow>(
-      `SELECT id, type, payload, attempts, created_at
-         FROM outbox
-        WHERE status = 'pending' AND available_at <= now()
-        ORDER BY available_at, id
-        LIMIT 1
-          FOR UPDATE SKIP LOCKED`,
-    );
-    const row = rows[0];
+    // Claim from each lane in priority order (commands before events); the
+    // first lane with a due row wins. Each query uses its lane's partial index.
+    let row: OutboxRow | undefined;
+    for (const lane of claimOrder(options.lane ?? 'all')) {
+      const { rows } = await client.query<OutboxRow>(
+        `SELECT id, type, payload, attempts, created_at
+           FROM outbox
+          WHERE status = 'pending' AND ${LANE_PREDICATE[lane]} AND available_at <= now()
+          ORDER BY available_at, id
+          LIMIT 1
+            FOR UPDATE SKIP LOCKED`,
+      );
+      row = rows[0];
+      if (row) break;
+    }
     if (!row) {
       await client.query('ROLLBACK');
       return { status: 'idle' };
