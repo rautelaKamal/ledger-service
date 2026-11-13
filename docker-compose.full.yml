@@ -21,11 +21,12 @@
 
 name: ledger-full
 
+# Every ledger service runs the SAME image with a different command. Only
+# `migrate` (which runs first) builds it; the others use the tag and must
+# never try to pull it from a registry.
 x-ledger-image: &ledger-image
   image: ledger-service:local
-  build:
-    context: .
-    target: app
+  pull_policy: never
 
 x-db-urls:
   # documented here, used below
@@ -54,7 +55,10 @@ services:
 
   # Runs once and exits. api and worker start only after it succeeded.
   migrate:
-    <<: *ledger-image
+    image: ledger-service:local
+    build:
+      context: .
+      target: app
     command: ["node", "dist/scripts/migrate.js"]
     environment:
       OWNER_DATABASE_URL: *owner-url
