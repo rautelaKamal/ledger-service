@@ -25,6 +25,10 @@ const EnvSchema = z.object({
   WORKER_BACKOFF_BASE_MS: z.coerce.number().int().positive().default(1_000),
   // 0 = pick any free port (tests); the container uses 9101.
   WORKER_HTTP_PORT: z.coerce.number().int().min(0).default(9101),
+  // Which lane(s) to claim from: commands (provider.*), events, or all (commands first).
+  WORKER_LANE: z.enum(['all', 'commands', 'events']).default('all'),
+  // How many loops claim rows at once in this process (FOR UPDATE SKIP LOCKED keeps them apart).
+  WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(1),
 });
 
 const env = EnvSchema.safeParse(process.env);
@@ -33,7 +37,8 @@ if (!env.success) {
   process.exit(1);
 }
 
-const pool = createPool(env.data.WORKER_DATABASE_URL, { max: 3 });
+// One connection per loop, plus room for the /metrics and /readyz queries.
+const pool = createPool(env.data.WORKER_DATABASE_URL, { max: env.data.WORKER_CONCURRENCY + 2 });
 const metrics = createWorkerMetrics(pool, { defaultMetrics: true });
 let stopping = false;
 const worker = new Worker(
@@ -43,6 +48,8 @@ const worker = new Worker(
     sink: new HttpNotificationSink(env.data.NOTIFICATION_SINK_URL),
   }),
   {
+    lane: env.data.WORKER_LANE,
+    concurrency: env.data.WORKER_CONCURRENCY,
     pollIntervalMs: env.data.WORKER_POLL_INTERVAL_MS,
     maxAttempts: env.data.WORKER_MAX_ATTEMPTS,
     backoffBaseMs: env.data.WORKER_BACKOFF_BASE_MS,
@@ -72,7 +79,7 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
 console.log('[worker] ready');
-logger.info('worker ready');
+logger.info({ lane: env.data.WORKER_LANE, concurrency: env.data.WORKER_CONCURRENCY }, 'worker ready');
 await worker.start();
 await new Promise<void>((resolve) => http.close(() => resolve()));
 await pool.end();
