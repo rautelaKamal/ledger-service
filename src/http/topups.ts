@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { Router } from 'express';
 import { z } from 'zod';
 import type { Pool } from '../db.js';
+import { logger } from '../logger.js';
+import { resultLabel, type ApiMetrics } from '../metrics.js';
 import { IdempotencyKeyBusyError, IdempotencyKeyReusedError, runIdempotent, type IdempotentOptions } from '../idempotency.js';
 import { findSettlementAccount } from '../ledger/topup.js';
 import { enqueueOutbox } from '../outbox/enqueue.js';
@@ -30,7 +32,7 @@ export function topupRequestHash(body: TopupBody): string {
  * transaction, then answers 202. The outbox worker calls the provider and records
  * the paymentId; the money is credited only when the provider confirms by webhook.
  */
-export function topupsRouter(pool: Pool, options: IdempotentOptions = {}): Router {
+export function topupsRouter(pool: Pool, metrics: ApiMetrics, options: IdempotentOptions = {}): Router {
   const router = Router();
 
   router.post('/topups', async (req, res) => {
@@ -98,18 +100,30 @@ export function topupsRouter(pool: Pool, options: IdempotentOptions = {}): Route
         options,
       );
 
-      if (result.replayed) res.setHeader('Idempotent-Replayed', 'true');
+      if (result.replayed) {
+        res.setHeader('Idempotent-Replayed', 'true');
+        metrics.idempotencyReplays.inc({ route: '/topups' });
+        logger.info({ status: result.status, replayed: true }, 'top-up replayed from idempotency key');
+      } else {
+        const outcome = resultLabel(result.status, result.body);
+        metrics.topups.inc({ result: outcome });
+        const topupId = (result.body as { topupId?: string }).topupId;
+        logger.info({ result: outcome, ...(topupId ? { topup_id: topupId } : {}) }, 'top-up');
+      }
       res.status(result.status).json(result.body);
     } catch (err) {
       if (err instanceof IdempotencyKeyReusedError) {
+        metrics.idempotencyRejections.inc({ route: '/topups', reason: 'key_reused' });
         res.status(422).json(errorBody('idempotency_key_reused', err.message));
         return;
       }
       if (err instanceof IdempotencyKeyBusyError) {
+        metrics.idempotencyRejections.inc({ route: '/topups', reason: 'key_busy' });
         res.setHeader('Retry-After', '1');
         res.status(409).json(errorBody('request_in_progress', err.message));
         return;
       }
+      metrics.topups.inc({ result: 'error' });
       throw err;
     }
   });

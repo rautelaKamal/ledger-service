@@ -1,0 +1,222 @@
+# The whole system on one machine: database, migrations, API, worker, mock
+# payment provider, Prometheus and Grafana. (docker-compose.yml stays the
+# dev-only database for `npm run dev` / `npm test`.)
+#
+#   npm run stack:up        build images, start everything, wait until healthy
+#   npm run stack:down      stop (data kept in the ledger_full_pgdata volume)
+#
+#   API          http://localhost:3000   (/healthz /readyz /metrics)
+#   Grafana      http://localhost:3001   (anonymous read-only; dashboard "Ledger")
+#   Prometheus   http://localhost:9090
+#   Mock provider http://localhost:4100
+#
+# On demand (profile "tools"):
+#   docker compose -f docker-compose.full.yml run --rm reconcile
+#   docker compose -f docker-compose.full.yml run --rm -T seed > load/out/accounts.json
+#   docker compose -f docker-compose.full.yml run --rm k6
+#
+# Every password and secret below is a LOCAL-ONLY default. Nothing is baked into
+# the images; real environments inject real values (Kubernetes Secrets, step 6b).
+# Memory limits keep the stack well inside Docker Desktop's VM on an 8 GB Mac.
+
+name: ledger-full
+
+# Every ledger service runs the SAME image with a different command. Only
+# `migrate` (which runs first) builds it; the others use the tag and must
+# never try to pull it from a registry.
+x-ledger-image: &ledger-image
+  image: ledger-service:local
+  pull_policy: never
+
+x-db-urls:
+  # documented here, used below
+  app: &app-url postgres://ledger_app:ledger_app_local@postgres:5432/ledger
+  owner: &owner-url postgres://ledger_owner:ledger_owner_local@postgres:5432/ledger
+  worker: &worker-url postgres://ledger_worker:ledger_worker_local@postgres:5432/ledger
+  reconciler: &reconciler-url postgres://ledger_reconciler:ledger_reconciler_local@postgres:5432/ledger
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    # Small on purpose (this runs next to everything else on a laptop).
+    command: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=100"]
+    volumes:
+      - ledger_full_pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ledger"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    mem_limit: 512m
+
+  # Runs once and exits. api and worker start only after it succeeded.
+  migrate:
+    image: ledger-service:local
+    build:
+      context: .
+      target: app
+    command: ["node", "dist/scripts/migrate.js"]
+    environment:
+      OWNER_DATABASE_URL: *owner-url
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    mem_limit: 128m
+
+  api:
+    <<: *ledger-image
+    command: ["node", "dist/src/server.js"]
+    environment:
+      DATABASE_URL: *app-url
+      PORT: "3000"
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-local-compose-webhook-secret-not-for-production}
+      SERVICE_NAME: api
+      LOG_LEVEL: info
+    ports:
+      - "3000:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # busybox wget ships with the alpine base image.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/readyz >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    # Must exceed SHUTDOWN_GRACE_MS (25 s) so in-flight requests can finish.
+    stop_grace_period: 30s
+    restart: unless-stopped
+    mem_limit: 256m
+
+  worker:
+    <<: *ledger-image
+    command: ["node", "dist/src/worker/main.js"]
+    environment:
+      WORKER_DATABASE_URL: *worker-url
+      PROVIDER_URL: http://mock-provider:4100
+      NOTIFICATION_SINK_URL: http://mock-provider:4100/notifications
+      WORKER_HTTP_PORT: "9101"
+      WORKER_POLL_INTERVAL_MS: "250"
+      SERVICE_NAME: worker
+      LOG_LEVEL: info
+    # No host port: Prometheus reaches it on the compose network.
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mock-provider:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9101/readyz >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    stop_grace_period: 30s
+    restart: unless-stopped
+    mem_limit: 192m
+
+  mock-provider:
+    image: ledger-mock-provider:local
+    build:
+      context: .
+      target: mock-provider
+    environment:
+      PROVIDER_PORT: "4100"
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-local-compose-webhook-secret-not-for-production}
+      LEDGER_WEBHOOK_URL: http://api:3000/webhooks/provider
+    ports:
+      - "4100:4100"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4100/healthz >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+    mem_limit: 96m
+
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=6h
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+      - worker
+    restart: unless-stopped
+    mem_limit: 256m
+
+  grafana:
+    image: grafana/grafana:12.4.15
+    environment:
+      # Local only: anyone on this machine may VIEW dashboards without logging in.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin-local-only}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/ledger.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    mem_limit: 256m
+
+  # ── On-demand tools ──
+
+  reconcile:
+    <<: *ledger-image
+    profiles: ["tools"]
+    command: ["node", "dist/src/reconcile/main.js", "--out", "/tmp/reconcile-report.json"]
+    environment:
+      RECONCILER_DATABASE_URL: *reconciler-url
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+    mem_limit: 128m
+
+  seed:
+    <<: *ledger-image
+    profiles: ["tools"]
+    command: ["node", "dist/scripts/seed-load.js"]
+    environment:
+      OWNER_DATABASE_URL: *owner-url
+      LOAD_ACCOUNTS: "10"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+    mem_limit: 128m
+
+  k6:
+    image: grafana/k6:1.8.2
+    profiles: ["tools"]
+    working_dir: /load
+    volumes:
+      - ./load:/load
+    environment:
+      API_URL: http://api:3000
+      PROVIDER_URL: http://mock-provider:4100
+      VUS: ${K6_VUS:-20}
+      DURATION: ${K6_DURATION:-2m}
+    command: ["run", "--summary-export=/load/out/summary.json", "/load/transfers.js"]
+    depends_on:
+      - api
+    mem_limit: 256m
+
+volumes:
+  ledger_full_pgdata:

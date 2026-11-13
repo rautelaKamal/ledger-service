@@ -1,3 +1,5 @@
+import { currentRequestId } from '../context.js';
+
 // The worker's view of the payment provider: the one call we make to it.
 // The mock provider (mock-provider/) implements the same shape in-process for
 // tests and demos; HttpProviderClient talks to it (or a real one) over HTTP.
@@ -41,7 +43,12 @@ export class HttpProviderClient implements ProviderClient {
     try {
       res = await fetch(`${this.baseUrl}/payments`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'idempotency-key': input.idempotencyKey },
+        headers: {
+          'content-type': 'application/json',
+          'idempotency-key': input.idempotencyKey,
+          // So the provider's logs can be joined with ours.
+          ...requestIdHeader(),
+        },
         body: JSON.stringify({ amountPaise: input.amountPaise.toString(), currency: input.currency, reference: input.reference }),
         // The worker holds an outbox row lock while this runs; it must not hang.
         signal: AbortSignal.timeout(this.timeoutMs),
@@ -58,4 +65,9 @@ export class HttpProviderClient implements ProviderClient {
     }
     return { paymentId: json.paymentId };
   }
+}
+
+function requestIdHeader(): Record<string, string> {
+  const id = currentRequestId();
+  return id ? { 'x-request-id': id } : {};
 }

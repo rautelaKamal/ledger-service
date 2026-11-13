@@ -12,3 +12,7 @@ coverage/
 
 # Written by `npm run reconcile` (step 6 uploads it elsewhere).
 reconcile-report.json
+
+# Load-test inputs/outputs (seeded account ids, k6 summaries).
+load/out/*
+!load/out/.gitkeep

@@ -21,11 +21,16 @@
     "reconcile": "tsx --env-file=.env src/reconcile/main.ts",
     "demo:outbox": "tsx --env-file=.env scripts/demo-outbox.ts",
     "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "stack:up": "docker compose -f docker-compose.full.yml up -d --build --wait",
+    "stack:down": "docker compose -f docker-compose.full.yml down",
     "test": "vitest run"
   },
   "dependencies": {
     "express": "^5.3.0",
     "pg": "^8.23.1",
+    "pino": "^10.4.0",
+    "prom-client": "^15.1.3",
     "zod": "^4.6.7"
   },
   "devDependencies": {

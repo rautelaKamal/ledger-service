@@ -1,6 +1,8 @@
 import express, { Router } from 'express';
 import { z } from 'zod';
 import type { Pool } from '../db.js';
+import { logger } from '../logger.js';
+import type { ApiMetrics } from '../metrics.js';
 import { processWebhookEvent, type WebhookTestHooks } from '../webhooks/process.js';
 import { SIGNATURE_HEADER, verifyWebhookSignature } from '../webhooks/signature.js';
 import { errorBody } from './errors.js';
@@ -21,6 +23,7 @@ const WebhookEventSchema = z.object({
 
 export interface WebhooksRouterOptions {
   webhookSecret: string;
+  metrics: ApiMetrics;
   testHooks?: WebhookTestHooks;
 }
 
@@ -44,6 +47,10 @@ export function webhooksRouter(pool: Pool, options: WebhooksRouterOptions): Rout
       header: req.header(SIGNATURE_HEADER),
     });
     if (!verified.ok) {
+      // Log WHY, never the header value or the body: a rejected webhook may be a forgery,
+      // and an accepted one carries a signature that must not end up in log storage.
+      options.metrics.webhookEvents.inc({ result: 'invalid_signature' });
+      logger.warn({ reason: verified.reason, body_bytes: rawBody.length }, 'webhook rejected');
       res.status(401).json(errorBody('invalid_signature', `webhook rejected: ${verified.reason}`));
       return;
     }
@@ -55,21 +62,30 @@ export function webhooksRouter(pool: Pool, options: WebhooksRouterOptions): Rout
     try {
       json = JSON.parse(rawBody.toString('utf8'));
     } catch {
+      options.metrics.webhookEvents.inc({ result: 'invalid_json' });
+      logger.warn({ body_bytes: rawBody.length }, 'webhook is not valid JSON');
       res.status(400).json(errorBody('invalid_json', 'webhook body is not valid JSON'));
       return;
     }
     const parsed = WebhookEventSchema.safeParse(json);
     if (!parsed.success) {
+      options.metrics.webhookEvents.inc({ result: 'invalid_event' });
+      logger.warn({ body_bytes: rawBody.length }, 'webhook is missing required fields');
       res.status(400).json(errorBody('invalid_event', 'webhook body is missing required fields', z.treeifyError(parsed.error)));
       return;
     }
 
     // 3. Apply it exactly once. Unexpected errors propagate -> 500 -> the provider retries.
     const outcome = await processWebhookEvent(pool, parsed.data, rawBody.toString('utf8'), options.testHooks ?? {});
+    const event = { event_id: parsed.data.id, event_type: parsed.data.type, payment_id: parsed.data.data.paymentId };
     if (outcome.duplicate) {
+      options.metrics.webhookEvents.inc({ result: 'duplicate' });
+      logger.info({ ...event, result: 'duplicate' }, 'webhook');
       res.status(200).json({ received: true, duplicate: true });
       return;
     }
+    options.metrics.webhookEvents.inc({ result: outcome.result });
+    logger.info({ ...event, result: outcome.result }, 'webhook');
     res.status(200).json({ received: true, result: outcome.result, ...(outcome.detail ? { detail: outcome.detail } : {}) });
   });
 

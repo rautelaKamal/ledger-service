@@ -1,0 +1,13 @@
+{
+  // Compiles the code that runs in containers to plain JavaScript in dist/.
+  // Tests, demos and dev tooling are not part of the image.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": ".",
+    "sourceMap": false,
+    "declaration": false
+  },
+  "include": ["src", "scripts/migrate.ts", "scripts/seed-load.ts", "mock-provider"]
+}
