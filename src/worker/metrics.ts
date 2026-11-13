@@ -1,6 +1,7 @@
 import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
 import type { Pool } from '../db.js';
 import { logger } from '../logger.js';
+import { LANES } from './lanes.js';
 import type { RowOutcome } from './outbox.js';
 
 // Worker metrics. Two kinds:
@@ -94,6 +95,51 @@ export function createWorkerMetrics(pool: Pool, options: { defaultMetrics?: bool
       await safely('outbox_dead_rows', async () => {
         const { rows } = await pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM outbox WHERE status = 'dead'`);
         this.set(rows[0]!.n);
+      });
+    },
+  });
+
+  // ── Per lane: commands (provider.*) and events (notifications) ──
+  // Two label values only. One query per scrape, shared by both gauges.
+  let laneCache: { at: number; rows: Promise<{ lane: string; pending: number; lag: number }[]> } | null = null;
+  const laneStats = (): Promise<{ lane: string; pending: number; lag: number }[]> => {
+    if (!laneCache || Date.now() - laneCache.at > 1_000) {
+      laneCache = {
+        at: Date.now(),
+        rows: pool
+          .query<{ lane: string; pending: number; lag: number }>(
+            `SELECT CASE WHEN type LIKE 'provider.%' THEN 'commands' ELSE 'events' END AS lane,
+                    count(*)::int AS pending,
+                    COALESCE(EXTRACT(EPOCH FROM (now() - min(available_at) FILTER (WHERE available_at <= now()))), 0)::float8 AS lag
+               FROM outbox WHERE status = 'pending'
+              GROUP BY 1`,
+          )
+          .then((r) => r.rows),
+      };
+    }
+    return laneCache.rows;
+  };
+  new Gauge({
+    name: 'outbox_lane_lag_seconds',
+    help: 'Per lane: age of the oldest row that is due but not yet sent (0 when caught up).',
+    labelNames: ['lane'],
+    registers: [registry],
+    async collect() {
+      await safely('outbox_lane_lag_seconds', async () => {
+        const rows = await laneStats();
+        for (const lane of LANES) this.set({ lane }, Math.max(0, rows.find((r) => r.lane === lane)?.lag ?? 0));
+      });
+    },
+  });
+  new Gauge({
+    name: 'outbox_lane_pending_rows',
+    help: 'Per lane: rows not yet sent (including ones waiting out a backoff).',
+    labelNames: ['lane'],
+    registers: [registry],
+    async collect() {
+      await safely('outbox_lane_pending_rows', async () => {
+        const rows = await laneStats();
+        for (const lane of LANES) this.set({ lane }, rows.find((r) => r.lane === lane)?.pending ?? 0);
       });
     },
   });

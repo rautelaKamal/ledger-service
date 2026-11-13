@@ -79,7 +79,7 @@ async function route(req: IncomingMessage, res: ServerResponse, requestId: strin
     const outboxId = (req.headers['outbox-id'] as string | undefined) ?? (typeof body.outboxId === 'string' ? body.outboxId : undefined);
     if (!outboxId) return send(res, 400, { error: 'Outbox-Id header is required' });
     const receipt = sink.record(outboxId, body);
-    log({ request_id: requestId, outbox_id: outboxId, type: body.type, duplicate: receipt.duplicate, total: sink.count }, 'notification received');
+    log({ request_id: requestId, outbox_id: outboxId, sequence: body.sequence, type: body.type, duplicate: receipt.duplicate, total: sink.count }, 'notification received');
     return send(res, 200, { received: true, duplicate: receipt.duplicate });
   }
 
