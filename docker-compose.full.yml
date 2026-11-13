@@ -14,6 +14,7 @@
 #   docker compose -f docker-compose.full.yml run --rm reconcile
 #   docker compose -f docker-compose.full.yml run --rm -T seed > load/out/accounts.json
 #   docker compose -f docker-compose.full.yml run --rm k6
+#   load/outbox-drain-bench.sh 1 2 4 8      (how fast the events lane drains, per concurrency)
 #
 # Every password and secret below is a LOCAL-ONLY default. Nothing is baked into
 # the images; real environments inject real values (Kubernetes Secrets, step 6b).
@@ -53,7 +54,7 @@ services:
       retries: 30
     mem_limit: 512m
 
-  # Runs once and exits. api and worker start only after it succeeded.
+  # Runs once and exits. api and the workers start only after it succeeded.
   migrate:
     image: ledger-service:local
     build:
@@ -93,28 +94,49 @@ services:
     restart: unless-stopped
     mem_limit: 256m
 
-  worker:
+  # The outbox worker runs as TWO services, one per lane (see src/worker/lanes.ts):
+  #   worker-commands  provider.* rows: a user is waiting; never stuck behind events
+  #   worker-events    notifications: bulk; scaled with WORKER_EVENTS_CONCURRENCY loops
+  # A slow or dead notification sink can therefore never delay a payment.
+  # Same image, same code; only WORKER_LANE / WORKER_CONCURRENCY differ.
+  worker-commands:
     <<: *ledger-image
     command: ["node", "dist/src/worker/main.js"]
-    environment:
+    environment: &worker-env
       WORKER_DATABASE_URL: *worker-url
       PROVIDER_URL: http://mock-provider:4100
       NOTIFICATION_SINK_URL: http://mock-provider:4100/notifications
       WORKER_HTTP_PORT: "9101"
       WORKER_POLL_INTERVAL_MS: "250"
-      SERVICE_NAME: worker
+      WORKER_LANE: commands
+      WORKER_CONCURRENCY: ${WORKER_COMMANDS_CONCURRENCY:-1}
+      SERVICE_NAME: worker-commands
       LOG_LEVEL: info
     # No host port: Prometheus reaches it on the compose network.
-    depends_on:
+    depends_on: &worker-deps
       migrate:
         condition: service_completed_successfully
       mock-provider:
         condition: service_started
-    healthcheck:
+    healthcheck: &worker-health
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9101/readyz >/dev/null || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 12
+    stop_grace_period: 30s
+    restart: unless-stopped
+    mem_limit: 192m
+
+  worker-events:
+    <<: *ledger-image
+    command: ["node", "dist/src/worker/main.js"]
+    environment:
+      <<: *worker-env
+      WORKER_LANE: events
+      WORKER_CONCURRENCY: ${WORKER_EVENTS_CONCURRENCY:-4}
+      SERVICE_NAME: worker-events
+    depends_on: *worker-deps
+    healthcheck: *worker-health
     stop_grace_period: 30s
     restart: unless-stopped
     mem_limit: 192m
@@ -149,7 +171,8 @@ services:
       - "9090:9090"
     depends_on:
       - api
-      - worker
+      - worker-commands
+      - worker-events
     restart: unless-stopped
     mem_limit: 256m
 
