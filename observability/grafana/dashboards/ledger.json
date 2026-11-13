@@ -6,7 +6,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "editable": false,
   "graphTooltip": 1,
   "refresh": "5s",
@@ -663,7 +663,7 @@
       "id": 22,
       "type": "timeseries",
       "title": "Outbox lag and backlog",
-      "description": "Lag = age of the oldest due row. Pending includes rows waiting out a backoff.",
+      "description": "Lag (left axis, seconds) = age of the oldest due row. Pending rows (right axis) includes rows waiting out a backoff.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -676,17 +676,39 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "s",
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 0,
             "stacking": {
               "mode": "none",
               "group": "A"
-            }
+            },
+            "axisLabel": "lag"
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "pending rows"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "custom.axisLabel",
+                "value": "rows"
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
