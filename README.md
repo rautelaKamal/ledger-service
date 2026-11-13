@@ -40,6 +40,8 @@ the database is reachable.
 | `npm run worker`    | Run the outbox worker (several copies may run at once)         |
 | `npm run reconcile` | Check the books; exit 1 and list problems if anything is off   |
 | `npm run demo:outbox` | A top-up whose worker is killed mid-flight, then recovers    |
+| `npm run build`     | Compile to `dist/` (what the container image runs)             |
+| `npm run stack:up` / `stack:down` | Start / stop the full Docker stack           |
 | `npm run typecheck` | TypeScript type check, no output files                         |
 | `npm test`          | Run the tests against the real `ledger_test` database          |
 
@@ -131,6 +133,38 @@ curl -X POST http://localhost:4100/payments/<paymentId>/succeed -H 'Content-Type
 `WEBHOOK_SECRET` must be the same value for the API and the provider. See
 [docs/STEP-04-EXPLAINED.md](docs/STEP-04-EXPLAINED.md) and, for the worker and reconciliation,
 [docs/STEP-05-EXPLAINED.md](docs/STEP-05-EXPLAINED.md).
+
+## Run the full stack (Docker Compose)
+
+Everything in containers: Postgres, migrations, API, outbox worker, mock payment
+provider, Prometheus and Grafana. Separate from the dev database above (its own volume).
+Uses about 300–450 MB of memory.
+
+```bash
+npm run stack:up        # build images, start everything, wait until healthy
+```
+
+| | |
+|---|---|
+| API | <http://localhost:3000> (`/healthz`, `/readyz`, `/metrics`) |
+| Grafana | <http://localhost:3001>, dashboard **Ledger** (anonymous, read-only) |
+| Prometheus | <http://localhost:9090> |
+| Mock provider | <http://localhost:4100> |
+
+On demand:
+
+```bash
+F="-f docker-compose.full.yml"
+docker compose $F run --rm reconcile                          # check the books (exit 1 on problems)
+docker compose $F run --rm -T seed > load/out/accounts.json   # 10 funded accounts for k6
+docker compose $F run --rm k6                                  # 2-minute load test (K6_VUS, K6_DURATION)
+docker compose $F logs -f api worker                           # JSON logs; filter by request_id
+npm run stack:down                                             # stop (add `-- -v` to delete the data)
+```
+
+`npm run build` compiles to `dist/` (what the image runs). See
+[docs/STEP-06A-EXPLAINED.md](docs/STEP-06A-EXPLAINED.md) for health vs readiness,
+metrics, logs and the load-test results.
 
 ## Port 5432 already in use?
 
