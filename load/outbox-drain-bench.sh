@@ -22,6 +22,7 @@ LEVELS=${*:-1 2 4 8}
 DC=(docker compose -f docker-compose.full.yml)
 psql_q() { "${DC[@]}" exec -T postgres psql -U postgres -d ledger -tAc "$1"; }
 pending_events() { psql_q "SELECT count(*) FROM outbox WHERE status = 'pending' AND type NOT LIKE 'provider.%'"; }
+now() { python3 -c 'import time; print(time.time())'; }
 cpu_of() { docker stats --no-stream --format '{{.Name}} {{.CPUPerc}}' | awk -v n="ledger-full-$1-1" '$1 == n { sub("%", "", $2); print $2 }'; }
 
 printf '%-4s %9s %10s %9s %9s %9s  %s\n' "N" "drain_s" "rows/s" "pg_cpu%" "wrk_cpu%" "sink_cpu%" "worker DB sessions were: (samples)"
@@ -30,8 +31,6 @@ for N in $LEVELS; do
   psql_q "INSERT INTO outbox (type, payload) SELECT 'transfer.posted', jsonb_build_object('bench', g) FROM generate_series(1, $ROWS) g" >/dev/null
 
   WORKER_EVENTS_CONCURRENCY=$N "${DC[@]}" up -d --no-deps worker-events >/dev/null 2>&1
-  start=$(date +%s.%N 2>/dev/null || python3 -c 'import time; print(time.time())')
-  now() { python3 -c 'import time; print(time.time())'; }
   start=$(now)
 
   t90="" ; t10="" ; c90=0 ; c10=0 ; pg=() ; wk=() ; sk=() ; waits=""
@@ -51,10 +50,12 @@ for N in $LEVELS; do
   done
   end=$(now)
 
-  avg() { printf '%s\n' "$@" | awk '{ s += $1 } END { if (NR) printf "%.0f", s / NR; else print "-" }'; }
+  # ${a[@]+"${a[@]}"}: an empty array under `set -u` is an error in macOS bash 3.2.
+  avg() { [ $# -eq 0 ] && { echo "-"; return; }; printf '%s\n' "$@" | awk '{ s += $1 } END { printf "%.0f", s / NR }'; }
   rate=$(python3 -c "print(round(($c90 - $c10) / ($t10 - $t90)))" 2>/dev/null || echo "-")
-  waits_summary=$(printf '%s' "$waits" | grep -v '^$' | sort | uniq -c | sort -rn | awk '{ printf "%s %s, ", $2, $1 }' | sed 's/, $//')
-  printf '%-4s %9.1f %10s %9s %9s %9s  %s\n' "$N" "$(python3 -c "print($end - $start)")" "$rate" "$(avg "${pg[@]}")" "$(avg "${wk[@]}")" "$(avg "${sk[@]}")" "${waits_summary:-none sampled}"
+  # `|| true`: no busy session in any sample is a valid result, not an error.
+  waits_summary=$(printf '%s' "$waits" | { grep -v '^$' || true; } | sort | uniq -c | sort -rn | awk '{ printf "%s %s, ", $2, $1 }' | sed 's/, $//')
+  printf '%-4s %9.1f %10s %9s %9s %9s  %s\n' "$N" "$(python3 -c "print($end - $start)")" "$rate" "$(avg ${pg[@]+"${pg[@]}"})" "$(avg ${wk[@]+"${wk[@]}"})" "$(avg ${sk[@]+"${sk[@]}"})" "${waits_summary:-none sampled}"
 done
 
 # Leave the stack as configured in docker-compose.full.yml.
