@@ -1,0 +1,68 @@
+# The mock payment provider. Stands in for the real, external provider: in
+# production this Deployment does not exist and PROVIDER_URL points outside.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-provider
+  labels:
+    app: mock-provider
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    # Its payments live in memory. A rolling update would briefly run two copies
+    # with different memories, and a payment created on one could not be found
+    # on the other. Recreate = stop the old one, then start the new one.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mock-provider
+  template:
+    metadata:
+      labels:
+        app: mock-provider
+    spec:
+      terminationGracePeriodSeconds: 15
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mock-provider
+          image: ledger-mock-provider
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 4100
+          envFrom:
+            - configMapRef:
+                name: mock-provider-config
+          env:
+            - name: WEBHOOK_SECRET
+              valueFrom: { secretKeyRef: { name: ledger-secrets, key: WEBHOOK_SECRET } }
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 300m
+              memory: 96Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

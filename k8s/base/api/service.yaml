@@ -1,0 +1,40 @@
+# Two Services for the API, deliberately:
+#
+#   api          the public one: ONLY the HTTP port. This is what an ingress or
+#                load balancer would point at. It has no idea port 9100 exists.
+#   api-metrics  internal, headless: the metrics port only. Prometheus discovers
+#                every api pod through this name's DNS records and scrapes each
+#                one directly (a scrape through a load balancer would hit a
+#                random pod each time and the numbers would be nonsense).
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  labels:
+    app: api
+spec:
+  type: ClusterIP
+  selector:
+    app: api
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-metrics
+  labels:
+    app: api
+spec:
+  clusterIP: None
+  # Scrape pods that are NOT ready too: a pod that is failing its readiness
+  # probe is precisely the one whose metrics you want to see.
+  publishNotReadyAddresses: true
+  selector:
+    app: api
+  ports:
+    - name: metrics
+      port: 9100
+      targetPort: metrics

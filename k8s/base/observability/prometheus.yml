@@ -1,0 +1,27 @@
+# Prometheus inside Kubernetes. Same scrape targets as observability/prometheus.yml
+# (compose), found differently: there is no fixed "api:3000" here, there are
+# 2-4 api pods whose IPs change. Each headless Service (api-metrics,
+# worker-commands, worker-events) publishes one DNS A record per pod, so
+# Prometheus asks DNS every refresh and scrapes every pod it gets back. No
+# cluster-wide read permissions needed, unlike the Kubernetes service-discovery.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: api
+    dns_sd_configs:
+      - names: ["api-metrics.ledger.svc.cluster.local"]
+        type: A
+        port: 9100
+        refresh_interval: 15s
+
+  # No target label called "lane": the metrics carry their own.
+  - job_name: worker
+    dns_sd_configs:
+      - names:
+          - "worker-commands.ledger.svc.cluster.local"
+          - "worker-events.ledger.svc.cluster.local"
+        type: A
+        port: 9101
+        refresh_interval: 15s

@@ -1,0 +1,75 @@
+# k6 running INSIDE the cluster, against the api Service (http://api:3000).
+#
+# Not through a port-forward: a port-forward pins every request to ONE pod, so
+# it would fail the moment that pod is replaced and prove nothing about the
+# Service. Inside the cluster, k6 talks to the Service like a real client.
+#
+# Inputs, created by scripts/k8s/lib.sh right before the Job:
+#   ConfigMap k6-load    transfers.js (load/transfers.js) and accounts.json (load/out/)
+#   ConfigMap k6-params  VUS, DURATION, API_URL, PROVIDER_URL
+# The summary JSON is printed to the log after a marker line, so the scripts
+# can read it with `kubectl logs`; the pod's filesystem is gone afterwards.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6
+  namespace: ledger
+  labels:
+    app: k6
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: k6
+    spec:
+      restartPolicy: Never
+      securityContext:
+        # The image's `k6` user.
+        runAsNonRoot: true
+        runAsUser: 12345
+        runAsGroup: 12345
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: k6
+          image: grafana/k6:1.8.2
+          workingDir: /load
+          command: ["sh", "-c"]
+          args:
+            - |
+              k6 run --summary-export=/out/summary.json /load/transfers.js
+              rc=$?
+              echo "===SUMMARY==="
+              cat /out/summary.json
+              exit $rc
+          envFrom:
+            - configMapRef:
+                name: k6-params
+          volumeMounts:
+            - name: load
+              mountPath: /load
+              readOnly: true
+            - name: out
+              mountPath: /out
+          resources:
+            requests: { cpu: 100m, memory: 64Mi }
+            limits: { cpu: "1", memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: load
+          configMap:
+            name: k6-load
+            items:
+              - key: transfers.js
+                path: transfers.js
+              - key: accounts.json
+                path: out/accounts.json
+        - name: out
+          emptyDir:
+            sizeLimit: 16Mi

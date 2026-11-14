@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ledger
+  labels:
+    # Pod Security Admission: the cluster REJECTS any pod in this namespace that
+    # is not "restricted" (non-root, no privilege escalation, all capabilities
+    # dropped, seccomp on). Belt and braces: every pod spec below already says
+    # so; this makes sure nobody can add one that does not.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted

@@ -1,0 +1,15 @@
+# Demo pacing only: scale back down one minute after the load stops, one pod
+# per 30 s. The base keeps the production-sensible 5 minutes.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api
+  namespace: ledger
+spec:
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 30

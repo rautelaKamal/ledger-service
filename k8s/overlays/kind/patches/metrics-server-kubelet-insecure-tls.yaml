@@ -1,0 +1,6 @@
+# kind's kubelets serve self-signed certificates that metrics-server cannot
+# verify. Local only: a real cluster has kubelet certificates signed by the
+# cluster CA and does not need this.
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --kubelet-insecure-tls

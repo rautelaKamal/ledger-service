@@ -1,0 +1,37 @@
+# Non-secret configuration. Anything with a password or a signing key is in the
+# Secret `ledger-secrets` (created by scripts/k8s/secrets.sh, never committed).
+#
+# Service names are stable DNS names inside the namespace: `postgres`, `api`,
+# `mock-provider`. Pods come and go; these names do not.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+data:
+  PORT: "3000"
+  # /metrics is served ONLY here, on a port the public Service does not expose.
+  METRICS_PORT: "9100"
+  SERVICE_NAME: api
+  LOG_LEVEL: info
+  # In-flight requests get this long to finish after SIGTERM. Must fit inside
+  # terminationGracePeriodSeconds (40) together with the preStop sleep (5).
+  SHUTDOWN_GRACE_MS: "25000"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: worker-config
+data:
+  PROVIDER_URL: http://mock-provider:4100
+  NOTIFICATION_SINK_URL: http://mock-provider:4100/notifications
+  WORKER_HTTP_PORT: "9101"
+  WORKER_POLL_INTERVAL_MS: "250"
+  LOG_LEVEL: info
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mock-provider-config
+data:
+  PROVIDER_PORT: "4100"
+  LEDGER_WEBHOOK_URL: http://api:3000/webhooks/provider

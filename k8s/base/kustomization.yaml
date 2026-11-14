@@ -1,0 +1,57 @@
+# The whole system, environment-independent. Nothing in here knows about kind,
+# Oracle or any other cluster: overlays (k8s/overlays/<env>) set image tags,
+# replica counts and anything cluster-specific on top of this.
+#
+#   kubectl kustomize k8s/base            render it
+#   kubectl apply -k k8s/overlays/kind    apply an overlay (never the base directly)
+#
+# Two Secrets are NOT here and never in git: ledger-secrets and grafana-admin.
+# scripts/k8s/secrets.sh creates them from your local .env.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ledger
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: ledger
+
+resources:
+  - namespace.yaml
+  - config.yaml
+  - postgres/service.yaml
+  - postgres/statefulset.yaml
+  - migrate-job.yaml
+  - api/deployment.yaml
+  - api/service.yaml
+  - api/hpa.yaml
+  - api/pdb.yaml
+  - workers/worker-commands.yaml
+  - workers/worker-events.yaml
+  - mock-provider/deployment.yaml
+  - mock-provider/service.yaml
+  - reconcile-cronjob.yaml
+  - observability/prometheus.yaml
+  - observability/grafana.yaml
+  - networkpolicy.yaml
+
+# Files become ConfigMaps with a content hash in their name (db-init-7f3k...).
+# Every workload that mounts one references it by that hashed name, so when a
+# file changes, the Deployment's pod template changes and Kubernetes rolls the
+# pods: a config change deploys like a code change, never a silent in-place edit.
+configMapGenerator:
+  - name: db-init
+    files:
+      - postgres/init/00-roles.sql
+  - name: prometheus-config
+    files:
+      - observability/prometheus.yml
+  - name: grafana-provisioning-datasources
+    files:
+      - observability/grafana/provisioning/datasources/prometheus.yml
+  - name: grafana-provisioning-dashboards
+    files:
+      - observability/grafana/provisioning/dashboards/ledger.yml
+  - name: grafana-dashboards
+    files:
+      - observability/grafana/dashboards/ledger.json

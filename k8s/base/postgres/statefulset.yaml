@@ -1,0 +1,116 @@
+# Postgres as a StatefulSet with ONE replica and a persistent volume.
+#
+# This is the right shape for a database on Kubernetes (stable name, stable
+# storage that survives pod restarts) and the WRONG place for production money
+# data. A managed database (RDS, Cloud SQL, Oracle Autonomous DB, ...) gives you
+# tested backups, point-in-time recovery, failover to a replica, storage that
+# grows, minor-version patching and an on-call team for the database itself.
+# Running that yourself on a cluster is a full-time job that is not this
+# service's job. docs/STEP-06B-EXPLAINED.md has the longer version.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        # The image's `postgres` user. Running as it from the start (instead of
+        # letting the image's entrypoint start as root and step down) means
+        # there is never a root process in this pod at all.
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        # Volumes are made writable by this group, so the data directory and
+        # the socket directory belong to postgres without any chown.
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:pg17
+          # Small on purpose: this shares one node with everything else.
+          args: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=100"]
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ledger-secrets
+                  key: POSTGRES_PASSWORD
+            # A subdirectory of the volume: initdb insists on an empty directory,
+            # and some storage drivers put a lost+found at the volume root.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            # The two places Postgres writes outside its data directory.
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+          # While the image's entrypoint runs initdb, Postgres listens on the UNIX
+          # socket only. Asking over TCP (-h) therefore says "not ready" until the
+          # real server is up, which is exactly right.
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: "1"
+              memory: 384Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # No storageClassName: the cluster's default class. kind provides one
+        # (local-path); a cloud cluster provides its block storage.
+        resources:
+          requests:
+            storage: 1Gi

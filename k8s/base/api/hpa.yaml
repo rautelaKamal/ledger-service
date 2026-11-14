@@ -1,0 +1,41 @@
+# Horizontal Pod Autoscaler: more api pods when they are busy, fewer when idle.
+#
+# "Busy" = average CPU across api pods above 60 % of their REQUEST (100m).
+# The numbers come from metrics-server, which reads them from every node's
+# kubelet; without metrics-server the HPA shows <unknown> and does nothing.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+  behavior:
+    scaleUp:
+      # React at once, at most two pods per 30 s.
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+    scaleDown:
+      # Scale down slowly: wait until the load has been low for 5 minutes, then
+      # one pod per minute. Scaling up is cheap; scaling down too early and
+      # having to scale up again means slow requests in the meantime.
+      # (The kind overlay shortens the window so the demo finishes in minutes.)
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60

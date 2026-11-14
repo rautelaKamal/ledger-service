@@ -1,0 +1,15 @@
+# Pod Disruption Budget: during VOLUNTARY disruptions (a node being drained for
+# an upgrade, the cluster autoscaler removing a node) at least one api pod must
+# stay up. The drain waits instead of evicting the last pod.
+#
+# It does not protect against crashes or a node dying (nothing can ask
+# permission for those); for that there are 2+ replicas on the Deployment.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: api

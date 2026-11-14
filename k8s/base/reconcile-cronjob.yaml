@@ -1,0 +1,72 @@
+# Nightly reconciliation (step 5's checks) at 02:00 India time.
+#
+# On demand:   scripts/k8s/reconcile-now.sh
+#              (= kubectl create job --from=cronjob/reconcile <name>: a one-off
+#              Job with exactly this template)
+#
+# The reconcile process exits 1 when it finds problems, so a run with problems
+# shows up as a FAILED Job (kubectl get jobs), and the worker's
+# reconciliation_last_run_* gauges turn red on the dashboard.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: reconcile
+  labels:
+    app: reconcile
+spec:
+  schedule: "0 2 * * *"
+  timeZone: Asia/Kolkata
+  # If last night's run is somehow still going, do not start another.
+  concurrencyPolicy: Forbid
+  # If the controller was down at 02:00, still run if it is back within an hour.
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # Do NOT retry: "problems found" is a correct answer, not a transient
+      # error, and running again a minute later would find the same problems.
+      backoffLimit: 0
+      # One-off Jobs created with --from are not covered by the history limits
+      # above; this cleans them (and their pods) up after a day.
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app: reconcile
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: reconcile
+              image: ledger-service
+              imagePullPolicy: IfNotPresent
+              command: ["node", "dist/src/reconcile/main.js", "--out", "/tmp/reconcile-report.json"]
+              env:
+                - name: RECONCILER_DATABASE_URL
+                  valueFrom: { secretKeyRef: { name: ledger-secrets, key: RECONCILER_DATABASE_URL } }
+              volumeMounts:
+                # The only thing it writes: the JSON report. Root stays read-only.
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 500m
+                  memory: 128Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 16Mi
