@@ -146,7 +146,7 @@ npm run stack:up        # build images, start everything, wait until healthy
 
 | | |
 |---|---|
-| API | <http://localhost:3000> (`/healthz`, `/readyz`, `/metrics`) |
+| API | <http://localhost:3000> (`/healthz`, `/readyz`; `/metrics` is on internal port 9100, scraped by Prometheus) |
 | Grafana | <http://localhost:3001>, dashboard **Ledger** (anonymous, read-only) |
 | Prometheus | <http://localhost:9090> |
 | Mock provider | <http://localhost:4100> |
