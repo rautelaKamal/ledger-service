@@ -5,7 +5,7 @@
 // spawns the real API process. Log lines are captured with useLogger().
 
 import { randomUUID } from 'node:crypto';
-import { cp, mkdtemp, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +16,7 @@ import { createPool, type Pool } from '../src/db.js';
 import { createLogger, useLogger } from '../src/logger.js';
 import { createApiMetrics } from '../src/metrics.js';
 import { MIGRATIONS_DIR } from '../src/migrations.js';
+import { waitUntilReady, type ReadinessReport } from '../src/readiness.js';
 import { recordRun, type ReconcileReport } from '../src/reconcile/run.js';
 import { createHandlers } from '../src/worker/handlers.js';
 import { startWorkerHttpServer } from '../src/worker/http.js';
@@ -188,6 +189,48 @@ describe('health, readiness and shutdown', () => {
     },
     30_000,
   );
+
+  test('9. waitUntilReady blocks while a migration is pending, resolves once it is applied, and gives up on request', async () => {
+    // Pending: the code knows a migration the database does not have.
+    const dir = await mkdtemp(join(tmpdir(), 'migrations-ahead-'));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const extra = join(dir, '999_not_applied_yet.sql');
+    await writeFile(extra, 'SELECT 1;');
+    const reports: ReadinessReport[] = [];
+    let resolved: boolean | undefined;
+    const waiting = waitUntilReady(workerPool, { migrationsDir: dir, intervalMs: 100, onNotReady: (r) => void reports.push(r) }).then((v) => (resolved = v));
+
+    await new Promise((r) => setTimeout(r, 450));
+    expect(resolved).toBeUndefined(); // still waiting ...
+    expect(reports.length).toBeGreaterThanOrEqual(3); // ... and checking regularly
+    expect(reports[0]).toMatchObject({ ready: false, checks: { database: 'up', migrations: 'pending' }, pending: ['999_not_applied_yet.sql'] });
+
+    await rm(extra); // "the migrate Job finished"
+    await waiting;
+    expect(resolved).toBe(true);
+
+    // Shutdown while waiting: returns false instead of waiting forever.
+    await writeFile(extra, 'SELECT 1;');
+    let stop = false;
+    const givingUp = waitUntilReady(workerPool, { migrationsDir: dir, intervalMs: 100, shouldStop: () => stop });
+    await new Promise((r) => setTimeout(r, 150));
+    stop = true;
+    expect(await givingUp).toBe(false);
+
+    // The database is unreachable: not ready, and it keeps waiting (no throw).
+    const deadPool = createPool('postgres://ledger_worker:x@127.0.0.1:9/nowhere');
+    try {
+      const down: ReadinessReport[] = [];
+      let stopDown = false;
+      const p = waitUntilReady(deadPool, { intervalMs: 50, shouldStop: () => stopDown, onNotReady: (r) => void down.push(r) });
+      await new Promise((r) => setTimeout(r, 200));
+      stopDown = true;
+      expect(await p).toBe(false);
+      expect(down[0]).toMatchObject({ ready: false, checks: { database: 'down' } });
+    } finally {
+      await deadPool.end();
+    }
+  });
 
   test('3. the worker HTTP server answers /healthz, /readyz and /metrics, including outbox and dead-row gauges', async () => {
     let stopping = false;

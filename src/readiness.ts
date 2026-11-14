@@ -41,3 +41,34 @@ export async function checkReadiness(
     ...(pending.length ? { pending } : {}),
   };
 }
+
+export interface WaitUntilReadyOptions {
+  migrationsDir?: string;
+  /** How long to wait between checks. */
+  intervalMs?: number;
+  /** Return early (false) when this says so, e.g. SIGTERM arrived while waiting. */
+  shouldStop?: () => boolean;
+  /** Called after every check that was not ready, for logging. */
+  onNotReady?: (report: ReadinessReport) => void;
+}
+
+/**
+ * Block until the database is reachable and fully migrated. Resolves true when
+ * it is, false if shouldStop() said to give up first.
+ *
+ * For processes that have no inbound traffic to gate (the worker): a freshly
+ * deployed cluster runs the migrate Job and the workers at the same time, and a
+ * worker that polls before the tables exist would crash on its first query.
+ * Waiting here turns "crash, restart, crash" into one log line per check.
+ */
+export async function waitUntilReady(pool: Pool, options: WaitUntilReadyOptions = {}): Promise<boolean> {
+  const intervalMs = options.intervalMs ?? 2_000;
+  for (;;) {
+    const report = await checkReadiness(pool, options.migrationsDir ? { migrationsDir: options.migrationsDir } : {});
+    if (report.ready) return true;
+    options.onNotReady?.(report);
+    if (options.shouldStop?.()) return false;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    if (options.shouldStop?.()) return false;
+  }
+}
