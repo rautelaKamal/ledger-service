@@ -10,7 +10,7 @@
   "scripts": {
     "db:up": "docker compose up -d --wait",
     "db:down": "docker compose down",
-    "db:roles": "docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f - < db/init/00-roles.sql",
+    "db:roles": "docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f - < k8s/base/postgres/init/00-roles.sql",
     "migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
     "dev": "tsx watch --env-file=.env src/server.ts",
     "demo:race": "tsx --env-file=.env scripts/demo-race.ts",

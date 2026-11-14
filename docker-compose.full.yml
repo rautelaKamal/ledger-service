@@ -46,7 +46,7 @@ services:
     command: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=100"]
     volumes:
       - ledger_full_pgdata:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - ./k8s/base/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d ledger"]
       interval: 2s

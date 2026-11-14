@@ -191,7 +191,7 @@ the last run said so, and here is the row.
 | `ledger_owner` | migrations, test resets | nothing stops the owner except the triggers |
 
 `db-guarantees` 24 proves each role is refused the others' work. The roles live in
-`db/init/00-roles.sql`, which is now safe to re-run (`npm run db:roles`).
+`k8s/base/postgres/init/00-roles.sql`, which is now safe to re-run (`npm run db:roles`).
 
 ---
 

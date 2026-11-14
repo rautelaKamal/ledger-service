@@ -8,12 +8,12 @@
 -- A separate reconciliation job (role ledger_reconciler) checks the books.
 
 -- ───────────── Guard: the background roles must exist ─────────────
--- Roles are cluster-wide and created by db/init/00-roles.sql (npm run db:roles).
+-- Roles are cluster-wide and created by k8s/base/postgres/init/00-roles.sql (npm run db:roles).
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledger_worker')
     OR NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledger_reconciler') THEN
-        RAISE EXCEPTION 'roles ledger_worker and ledger_reconciler must exist: run db/init/00-roles.sql first (npm run db:roles)';
+        RAISE EXCEPTION 'roles ledger_worker and ledger_reconciler must exist: run k8s/base/postgres/init/00-roles.sql first (npm run db:roles)';
     END IF;
 END;
 $$;

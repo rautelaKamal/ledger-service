@@ -1,4 +1,4 @@
--- db/init/00-roles.sql
+-- k8s/base/postgres/init/00-roles.sql  (one copy: compose, CI and the Kubernetes migrate Job all use it)
 -- Runs as the postgres SUPERUSER:
 --   * locally: docker runs every file in /docker-entrypoint-initdb.d on an EMPTY volume,
 --              and `npm run db:roles` re-runs it against an existing one

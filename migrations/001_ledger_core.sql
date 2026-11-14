@@ -1,7 +1,7 @@
 -- migrations/001_ledger_core.sql
 -- Runs as ledger_owner. The migration runner wraps this file in BEGIN/COMMIT,
 -- so either every statement below is applied or none is.
--- Requires the roles ledger_owner and ledger_app (created by db/init/00-roles.sql).
+-- Requires the roles ledger_owner and ledger_app (created by k8s/base/postgres/init/00-roles.sql).
 
 -- ───────────── Schema access ─────────────
 -- Only roles we explicitly allow may even see objects in this schema.

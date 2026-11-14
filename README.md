@@ -179,7 +179,7 @@ If another Postgres already listens on 5432, set `POSTGRES_PORT=5434` (or any fr
 
 ## Resetting the database
 
-`db/init/00-roles.sql` creates the roles and databases. Docker runs it **only when the
+`k8s/base/postgres/init/00-roles.sql` creates the roles and databases. Docker runs it **only when the
 data volume is empty**. If you change that file, or want a completely fresh database,
 delete the volume:
 

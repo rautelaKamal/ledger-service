@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
 
     # Service containers start BEFORE the repo is checked out, so they cannot
-    # mount db/init/00-roles.sql. We run that file with psql in a step instead.
+    # mount k8s/base/postgres/init/00-roles.sql. We run that file with psql in a step instead.
     services:
       postgres:
         image: pgvector/pgvector:pg17
@@ -25,7 +25,7 @@ jobs:
           --health-retries 30
 
     env:
-      # CI-only values; they match db/init/00-roles.sql. Tests use ledger_test.
+      # CI-only values; they match k8s/base/postgres/init/00-roles.sql. Tests use ledger_test.
       DATABASE_URL: postgres://ledger_app:ledger_app_local@localhost:5432/ledger_test
       OWNER_DATABASE_URL: postgres://ledger_owner:ledger_owner_local@localhost:5432/ledger_test
       WORKER_DATABASE_URL: postgres://ledger_worker:ledger_worker_local@localhost:5432/ledger_test
@@ -45,7 +45,7 @@ jobs:
       - name: Create roles and databases (as postgres superuser)
         env:
           PGPASSWORD: postgres
-        run: psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d postgres -f db/init/00-roles.sql
+        run: psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d postgres -f k8s/base/postgres/init/00-roles.sql
 
       - name: Run migrations against ledger_test
         run: npm run migrate
