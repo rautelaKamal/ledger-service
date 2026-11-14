@@ -72,11 +72,17 @@ spec:
             exec:
               command: ["pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
             periodSeconds: 2
+            timeoutSeconds: 5
             failureThreshold: 60
+          # timeoutSeconds everywhere: the default is 1 s, and on a busy node a
+          # healthy process can take longer than that to answer. A probe that
+          # times out counts as FAILED, and enough failed liveness probes mean a
+          # restart of a process that was fine.
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
             periodSeconds: 5
+            timeoutSeconds: 5
             failureThreshold: 3
           livenessProbe:
             exec:

@@ -45,14 +45,17 @@ spec:
           startupProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 2
-            failureThreshold: 30
+            timeoutSeconds: 3
+            failureThreshold: 60
           readinessProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 5
+            timeoutSeconds: 3
             failureThreshold: 2
           livenessProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 10
+            timeoutSeconds: 3
             failureThreshold: 3
           resources:
             requests:

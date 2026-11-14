@@ -57,9 +57,9 @@ spec:
             - name: WEBHOOK_SECRET
               valueFrom: { secretKeyRef: { name: ledger-secrets, key: WEBHOOK_SECRET } }
           # Three probes, three questions:
-          #   startup:   has the process come up at all? (up to 60 s; until it
+          #   startup:   has the process come up at all? (up to 2 min; until it
           #              passes, the other two probes are not run, so a slow
-          #              start is never mistaken for a hang)
+          #              start on a busy node is never mistaken for a hang)
           #   readiness: should this pod get traffic right now? (/readyz: DB up,
           #              migrations applied, not shutting down). Failing it
           #              removes the pod from the Service; nothing is restarted.
@@ -69,7 +69,8 @@ spec:
           startupProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 2
-            failureThreshold: 30
+            timeoutSeconds: 3
+            failureThreshold: 60
           readinessProbe:
             httpGet: { path: /readyz, port: http }
             periodSeconds: 5
