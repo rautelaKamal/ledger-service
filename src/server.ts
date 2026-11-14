@@ -2,19 +2,24 @@ import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { createPool } from './db.js';
 import { logger } from './logger.js';
+import { startMetricsServer } from './metrics-server.js';
 import { createApiMetrics } from './metrics.js';
 
 const config = loadConfig();
 const pool = createPool(config.DATABASE_URL);
 let shuttingDown = false;
+const metrics = createApiMetrics({ defaultMetrics: true });
 const app = createApp(pool, {
   webhookSecret: config.WEBHOOK_SECRET,
-  metrics: createApiMetrics({ defaultMetrics: true }),
+  metrics,
   isShuttingDown: () => shuttingDown,
+  serveMetrics: config.METRICS_PORT === undefined,
 });
 
+// Internal metrics port first, so the "listening" line means both are up.
+const metricsServer = config.METRICS_PORT === undefined ? undefined : await startMetricsServer(metrics.registry, config.METRICS_PORT);
 const server = app.listen(config.PORT, () => {
-  logger.info({ port: config.PORT }, 'api listening');
+  logger.info({ port: config.PORT, metrics_port: config.METRICS_PORT ?? config.PORT }, 'api listening');
 });
 
 /** How long in-flight requests get to finish before their connections are cut. */
@@ -40,6 +45,8 @@ function shutdown(signal: string): void {
   force.unref();
 
   server.close(() => {
+    // Metrics stayed scrapeable while requests drained; now they can go too.
+    metricsServer?.close();
     void pool
       .end()
       .then(() => {

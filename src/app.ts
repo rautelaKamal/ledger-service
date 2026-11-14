@@ -22,6 +22,11 @@ export interface AppOptions extends IdempotentOptions {
   isShuttingDown?: () => boolean;
   /** Where to find migration files for /readyz (tests point it elsewhere). */
   migrationsDir?: string;
+  /**
+   * Serve /metrics on this app's port (default true). server.ts sets it to false
+   * when METRICS_PORT is set: metrics then live only on that internal port.
+   */
+  serveMetrics?: boolean;
 }
 
 /** Paths that are polled constantly by infrastructure; logged at debug level only. */
@@ -95,9 +100,11 @@ export function createApp(pool: Pool, options: AppOptions): express.Express {
     }
   });
 
-  app.get('/metrics', async (_req, res) => {
-    res.type(metrics.registry.contentType).send(await metrics.registry.metrics());
-  });
+  if (options.serveMetrics ?? true) {
+    app.get('/metrics', async (_req, res) => {
+      res.type(metrics.registry.contentType).send(await metrics.registry.metrics());
+    });
+  }
 
   const idempotency = { ...(options.keyClaimTimeoutMs !== undefined ? { keyClaimTimeoutMs: options.keyClaimTimeoutMs } : {}) };
   app.use(transfersRouter(pool, metrics, idempotency));

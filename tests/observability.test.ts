@@ -299,6 +299,49 @@ describe('metrics', () => {
     // The problems list itself is not exposed (and the worker cannot read it).
     await expect(workerPool.query('SELECT problems FROM reconciliation_runs')).rejects.toMatchObject({ code: '42501' });
   });
+
+  test(
+    '8. with METRICS_PORT set, /metrics is served only on that internal port, not on the API port',
+    async () => {
+      const [port, metricsPort] = [await freePort(), await freePort()];
+      const child = spawnTs('src/server.ts', [], {
+        PORT: String(port),
+        METRICS_PORT: String(metricsPort),
+        WEBHOOK_SECRET: TEST_WEBHOOK_SECRET,
+        LOG_LEVEL: 'info',
+      });
+      let output = '';
+      child.stdout.on('data', (d: Buffer) => (output += d.toString()));
+      child.stderr.on('data', (d: Buffer) => (output += d.toString()));
+      try {
+        for (let i = 0; i < 50 && !output.includes('api listening'); i++) await new Promise((r) => setTimeout(r, 100));
+        expect(output).toContain('api listening');
+        const api = `http://127.0.0.1:${port}`;
+        const internal = `http://127.0.0.1:${metricsPort}`;
+
+        expect((await fetch(`${api}/healthz`)).status).toBe(200); // the API port still serves the API ...
+        expect((await fetch(`${api}/metrics`)).status).toBe(404); // ... but no longer metrics
+
+        const scrape = await fetch(`${internal}/metrics`);
+        expect(scrape.status).toBe(200);
+        const text = await scrape.text();
+        // Same registry: the requests just made on the API port are counted here.
+        expect(sample(text, 'http_requests_total{method="GET",route="/healthz",status="200"}')).toBe(1);
+        expect(sample(text, 'http_requests_total{method="GET",route="unmatched",status="404"}')).toBe(1);
+        expect(text).toContain('ledger_api_process_resident_memory_bytes');
+
+        // The internal port serves nothing else.
+        expect((await fetch(`${internal}/healthz`)).status).toBe(404);
+        expect((await fetch(`${internal}/transfers`, { method: 'POST' })).status).toBe(404);
+
+        child.kill('SIGTERM');
+        expect(await exitWithin(child, 10_000), output).toEqual({ code: 0, signal: null });
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      }
+    },
+    30_000,
+  );
 });
 
 describe('logs', () => {
