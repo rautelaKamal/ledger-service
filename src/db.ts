@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { logger } from './logger.js';
 
 // ── How we read BIGINT (money) from Postgres ──────────────────────────────
 // Postgres BIGINT ("int8", type id 20) can hold up to 9.2 * 10^18.
@@ -17,12 +18,22 @@ import pg from 'pg';
 pg.types.setTypeParser(pg.types.builtins.INT8, (value: string) => BigInt(value));
 
 export function createPool(connectionString: string, options: { max?: number } = {}): pg.Pool {
-  return new pg.Pool({
+  const pool = new pg.Pool({
     connectionString,
     max: options.max ?? 10,
     // Fail instead of waiting forever when every connection is busy.
     connectionTimeoutMillis: 10_000,
   });
+  // The pool emits 'error' when an IDLE connection dies underneath it (the
+  // server restarted, a network reset, a firewall dropping a quiet socket).
+  // With no listener, Node treats that as unhandled and exits the process:
+  // one dropped idle socket would kill a worker mid-batch. The pool already
+  // discards the dead client; the next query simply opens a new connection.
+  // Queries in flight on that client fail on their own, through their promise.
+  pool.on('error', (err) => {
+    logger.warn({ err }, 'idle database connection dropped; the pool will reconnect on the next query');
+  });
+  return pool;
 }
 
 export type { Pool, PoolClient } from 'pg';

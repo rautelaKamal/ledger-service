@@ -22,7 +22,7 @@ import { createHandlers } from '../src/worker/handlers.js';
 import { startWorkerHttpServer } from '../src/worker/http.js';
 import { createWorkerMetrics } from '../src/worker/metrics.js';
 import { Worker } from '../src/worker/run.js';
-import { HttpNotificationSink } from '../src/worker/sinks.js';
+import { HttpNotificationSink, MemorySink } from '../src/worker/sinks.js';
 import { createAccount, fundAccount } from './helpers.js';
 import { TEST_WEBHOOK_SECRET, startTestServer, type TestServer } from './http.js';
 import { resetLedger } from './reset.js';
@@ -431,6 +431,50 @@ describe('logs', () => {
     // An unsafe incoming id is replaced, not echoed into logs and headers.
     const odd = await postTransfer(s.url, { fromAccountId: a, toAccountId: b, amountPaise: '1' }, { 'x-request-id': 'has spaces and "quotes"' });
     expect(odd.headers.get('x-request-id')).toMatch(UUID);
+  });
+
+  test('10. an idle database connection dying is a warning line, not the end of the process', async () => {
+    // pg emits 'error' on the pool for an idle client whose socket dropped. With
+    // no listener Node would exit (that is how worker-events died in step 6b).
+    const pool = createPool(process.env.WORKER_DATABASE_URL!, { max: 1 });
+    try {
+      await pool.query('SELECT 1'); // one idle client now exists
+      const { lines } = await captureLogs(async () => {
+        pool.emit('error', new Error('read ECONNRESET'), {} as never); // what pg does when the socket resets
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({ level: 'warn', msg: expect.stringContaining('idle database connection dropped') as string });
+      expect(JSON.stringify(lines[0])).toContain('ECONNRESET');
+      // Still alive, still usable.
+      expect((await pool.query<{ n: number }>('SELECT 1 AS n')).rows[0]?.n).toBe(1);
+    } finally {
+      await pool.end();
+    }
+  });
+
+  test('11. the worker loop survives a database it cannot reach: logs, keeps polling, still stops cleanly', async () => {
+    const deadPool = createPool('postgres://ledger_worker:x@127.0.0.1:9/nowhere', { max: 2 });
+    try {
+      const worker = new Worker(deadPool, createHandlers({ provider: { createPayment: async () => ({ paymentId: 'x' }) }, sink: new MemorySink() }), {
+        lane: 'events',
+        concurrency: 2,
+        pollIntervalMs: 20,
+      });
+      const { result, lines } = await captureLogs(async () => {
+        const running = worker.start();
+        await new Promise((r) => setTimeout(r, 250)); // several failed polls
+        worker.stop();
+        return Promise.race([running.then(() => 'stopped'), new Promise<string>((r) => setTimeout(() => r('still running'), 2_000))]);
+      });
+      expect(result).toBe('stopped'); // start() resolved after stop(): no loop was stuck or dead
+      const failures = lines.filter((l) => l.msg === 'outbox poll failed; trying again after the poll interval');
+      expect(failures.length).toBeGreaterThanOrEqual(2); // it kept trying ...
+      expect(failures.length).toBeLessThan(100); // ... at the poll interval, not in a hot loop
+      expect(failures[0]).toMatchObject({ level: 'error' });
+    } finally {
+      await deadPool.end();
+    }
   });
 
   test('7. webhook logs record what happened, never the signature, the secret or the raw body', async () => {
