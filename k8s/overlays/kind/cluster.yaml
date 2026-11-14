@@ -10,3 +10,17 @@ name: ledger
 nodes:
   - role: control-plane
     image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+
+# etcd (the cluster's database) keeps its data in memory: kind mounts /tmp in
+# the node as tmpfs. On a laptop, etcd's fsyncs otherwise go through Docker's
+# virtual disk to the host disk; when that stalls, etcd stalls, the API server
+# fails its liveness probe, and every controller loses its leader lease (seen
+# three times in step 6b). The price: a restart of the node container loses the
+# cluster, which for a throwaway local cluster is nothing (scripts/k8s/up.sh).
+# Local only; a real cluster's etcd lives on fast, durable disks.
+kubeadmConfigPatches:
+  - |
+    kind: ClusterConfiguration
+    etcd:
+      local:
+        dataDir: /tmp/etcd

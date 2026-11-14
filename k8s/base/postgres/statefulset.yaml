@@ -82,14 +82,20 @@ spec:
             exec:
               command: ["pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
             periodSeconds: 5
-            timeoutSeconds: 5
+            timeoutSeconds: 10
             failureThreshold: 3
+          # Liveness is a TCP probe on purpose, not pg_isready. An exec probe
+          # needs the container runtime to start a process inside the container
+          # within the timeout; on a busy node that is the first thing to fail,
+          # and a failed liveness probe restarts the one process everything else
+          # depends on. "The port accepts connections" is checked by the kubelet
+          # itself, costs nothing, and still catches a hung or dead postmaster.
           livenessProbe:
-            exec:
-              command: ["pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
+            tcpSocket:
+              port: postgres
             periodSeconds: 10
             timeoutSeconds: 5
-            failureThreshold: 3
+            failureThreshold: 6
           resources:
             requests:
               cpu: 100m

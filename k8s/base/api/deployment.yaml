@@ -80,7 +80,7 @@ spec:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 10
             timeoutSeconds: 3
-            failureThreshold: 3
+            failureThreshold: 6
           lifecycle:
             preStop:
               # Why sleep before SIGTERM: when a pod starts terminating, Kubernetes
