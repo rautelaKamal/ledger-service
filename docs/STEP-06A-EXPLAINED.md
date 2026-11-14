@@ -301,16 +301,129 @@ created, gave up on 110 of them, and those top-ups are still `pending`. That is 
 and safe (no money moved), and reconciliation will flag them as stale after 24 h. But a
 user-facing command should never wait behind a bulk notification.
 
-What would fix them, for a later step (not built here):
-- **More workers.** `FOR UPDATE SKIP LOCKED` already lets several workers share the
-  queue safely; the outbox lag metric is exactly the signal an autoscaler would use.
-- **Separate lanes.** Poll commands (`provider.*`) before events, or run separate
-  workers per type, so payments are never stuck behind notifications.
-- **Batching or leasing** (described in step 5) to cut the per-row transaction cost.
+Both are fixed in step 6a.1; see the next section.
 
 ---
 
-## 8. Eight questions to answer before moving on
+## 8. What the load test found and how we fixed it (step 6a.1)
+
+### The two problems, in one sentence each
+
+1. **Head-of-line blocking.** Payments waited in the same line as notifications, so a
+   user's top-up stood behind thousands of "transfer happened" messages.
+2. **Not enough hands.** One worker, doing one row at a time, could not keep up with the
+   API, so notifications fell further and further behind.
+
+### The fix: two lanes, several loops
+
+**Lanes.** The outbox is now split into two lanes by row type (`src/worker/lanes.ts`):
+
+| Lane | Rows | Who is waiting |
+|---|---|---|
+| `commands` | `provider.*` (ask the provider for a payment) | a user, at a "top-up in progress" screen |
+| `events` | `transfer.posted`, `topup.posted`, `topup.failed` | nobody in particular; downstream systems |
+
+Each lane claims rows only from its own partial index (migration 007), so the commands
+lane never even looks at the events backlog. In compose they are two services,
+`worker-commands` and `worker-events`: same image, `WORKER_LANE` decides. A slow or dead
+notification sink can now never delay a payment. A worker started with `WORKER_LANE=all`
+(the default for `npm run worker` and the tests) still puts commands first: every claim
+tries the commands lane, then the events lane.
+
+Options considered: one queue with "commands first" ordering (helps, but a single loop
+still waits for whatever event it is in the middle of, and the two kinds of work cannot
+be scaled separately); a table per lane (duplicates every trigger and grant for nothing);
+`LISTEN/NOTIFY` (makes a worker wake up sooner, but does not change the order of the
+line). Lanes plus commands-first was the smallest change that removes the problem.
+
+**Concurrency.** `WORKER_CONCURRENCY=N` runs N loops in one worker process. They cannot
+collide: each loop claims its row with `FOR UPDATE SKIP LOCKED`, the same rule that already
+let several worker *processes* share the queue. `worker-events` runs 4 loops, and
+`worker-commands` runs 1.
+
+**The price: events arrive out of order.** With several loops, event 105 can be delivered
+before event 104 (104's delivery was a bit slower, or it failed once and was retried). Every
+event now carries `sequence` (its outbox id, as a 64-bit number written as a string) and
+`createdAt`. The contract for anyone consuming our events:
+- **at least once:** the same event may arrive twice; dedupe by `outboxId`
+- **unordered:** arrival order means nothing
+- **sort by `sequence`** to get the order the events were *created* in. The id is
+  assigned when the row is inserted, and two transactions can commit in the opposite
+  order, so a lower `sequence` can still arrive later. A gap in the numbers is not proof
+  that an event was lost.
+
+### Before and after
+
+The same k6 script as 6a (20 virtual users sending transfers, 10 % same-key retries,
+one top-up per second, 2 minutes) was run **six times**: three setups, two rounds,
+interleaved, each on a freshly reset database, on the same machine on mains power.
+
+| | **Before** (6a code: one worker, one queue) | **Middle** (one worker, commands first) | **After** (two lanes, 4 events loops) |
+|---|---|---|---|
+| Top-ups confirmed in time | **8 of 118 · 8 of 119** | 121 of 121 · 121 of 121 | **120 of 120 · 121 of 121** |
+| Outbox peak backlog | **28,191 · 28,399 rows** | 32,474 · 33,841 rows | **220 · 225 rows** |
+| Outbox peak lag | **52.1 s · 47.0 s** | 56.3 s · 55.7 s | **0.3 s · 2.6 s** |
+| Payment (commands) peak lag | (no separate lane) | 0.2 s · 0.0 s | 0.3 s · 0.5 s |
+| Drain after the load stopped | **34.3 s · 33.2 s** | 47.9 s · 49.7 s | **0.3 s · 0.3 s** |
+| Transfer p95 | 55.8 · 52.9 ms | 56.7 · 52.3 ms | 60.8 · 70.6 ms |
+| Throughput | 678 · 703 req/s | 665 · 720 req/s | 651 · 581 req/s |
+| Failed transfers, replay mismatches, dead rows | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 |
+| Reconciliation afterwards | OK, 0 problems | OK, 0 problems | OK, 0 problems |
+
+*(Each cell is round 1 · round 2. The original 6a run, on battery in Low Power Mode, gave
+425 req/s, p95 93 ms, 9 of 119 top-ups and 36 s of lag: the same problems on a throttled
+CPU, which is why it is not used for the comparison.)*
+
+In plain English:
+- **Before:** under 700 requests a second, payments waited behind notifications: only 8 of
+  about 120 top-ups got their payment within k6's 5 seconds. Notifications ran about 50 s
+  late and took another half minute to catch up after the load stopped.
+- **Middle:** putting commands first fixes the top-ups completely (every one confirmed),
+  but makes the notification backlog *worse*: in `all` mode every claim first asks the
+  (almost always empty) commands lane, so each event costs one extra query.
+- **After:** both problems are gone. Every top-up is confirmed, notifications are at most
+  a few seconds behind, and there is nothing left to drain when the load stops.
+- **What it costs:** the worker now writes about 600 rows a second **while** the API is
+  busy, instead of putting it off until later, and both share one database. Transfer p95
+  rose by about 5 to 18 ms and throughput fell by about 5 to 15 %. The total work is the
+  same as before; it is just done on time. (Run-to-run noise on this laptop is of a
+  similar size: two Middle runs earlier in the day measured 474 and 724 req/s.)
+
+![The dashboard during an "after" run](images/step-06a1-dashboard-after.png)
+
+*About 100 s into an "after" run: payment lag 0 s, events lag 179 ms, a backlog that
+peaks around 250 rows instead of 28,000, and a steady one confirmed top-up per second.
+"Never ran" is correct: each run starts from an empty database and reconciliation runs
+after the load. Compare with the 6a screenshot in section 6.*
+
+### Where the next bottleneck is
+
+`load/outbox-drain-bench.sh` queues 20,000 events and times how fast the events lane
+drains them with N loops, while sampling CPU per container:
+
+| Loops (N) | Drain time | Rows per second | Postgres CPU | Worker CPU | Sink CPU |
+|---|---|---|---|---|---|
+| 1 | 27.4 s | 780 | 32 % | 66 % | 11 % |
+| 2 | 18.0 s | **1,230** | 54 % | **94 %** | 25 % |
+| 4 | 16.9 s | 1,222 | 89 % | 94 % | 11 % |
+| 8 | 16.9 s | 1,215 | **97 %** | 63 % | 13 % |
+
+*(CPU is a percentage of one core, as `docker stats` reports it.)*
+
+- **The limit is the worker process itself, then the database.** From 2 loops on, one
+  worker process sits at ~94 % of a core: Node runs our JavaScript on a single thread, so
+  extra loops in the same process just wait their turn. With 8 loops Postgres reaches
+  97 % and the extra loops add contention instead of speed.
+- **The sink is not the limit** (11–25 %).
+- **So:** 2–4 loops per process is the sweet spot. Beyond ~1,200 events a second, add
+  more `worker-events` **processes** (replicas, in Kubernetes), not more loops, and
+  watch Postgres CPU; the per-lane lag metric is the signal to scale on.
+- The benchmark also sampled what the worker's database sessions were waiting on, but
+  caught only one busy session per level: too few samples to conclude anything from.
+
+---
+
+## 9. Eight questions to answer before moving on
 
 1. A pod's `/healthz` returns 200 but its `/readyz` returns 503. What will Kubernetes do and not do, and name two situations that cause exactly this.
 2. Why would making `/healthz` check the database turn a one-minute database outage into a much longer one?

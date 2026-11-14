@@ -158,9 +158,15 @@ F="-f docker-compose.full.yml"
 docker compose $F run --rm reconcile                          # check the books (exit 1 on problems)
 docker compose $F run --rm -T seed > load/out/accounts.json   # 10 funded accounts for k6
 docker compose $F run --rm k6                                  # 2-minute load test (K6_VUS, K6_DURATION)
+load/outbox-drain-bench.sh 1 2 4 8                             # how fast the events lane drains per loop count
 docker compose $F logs -f api worker                           # JSON logs; filter by request_id
 npm run stack:down                                             # stop (add `-- -v` to delete the data)
 ```
+
+The outbox worker runs as two services, one per lane: `worker-commands` (provider calls
+a user is waiting on) and `worker-events` (notifications). Set loops per service with
+`WORKER_COMMANDS_CONCURRENCY` / `WORKER_EVENTS_CONCURRENCY` (defaults 1 and 4). Events are
+delivered at least once and **unordered**; consumers sort by `sequence` (see step 6a.1).
 
 `npm run build` compiles to `dist/` (what the image runs). See
 [docs/STEP-06A-EXPLAINED.md](docs/STEP-06A-EXPLAINED.md) for health vs readiness,
