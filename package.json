@@ -24,6 +24,12 @@
     "build": "tsc -p tsconfig.build.json",
     "stack:up": "docker compose -f docker-compose.full.yml up -d --build --wait",
     "stack:down": "docker compose -f docker-compose.full.yml down",
+    "k8s:up": "scripts/k8s/up.sh",
+    "k8s:smoke": "scripts/k8s/smoke.sh",
+    "k8s:zero-downtime": "scripts/k8s/zero-downtime.sh",
+    "k8s:hpa-demo": "scripts/k8s/hpa-demo.sh",
+    "k8s:validate": "scripts/k8s/validate.sh",
+    "k8s:down": "scripts/k8s/down.sh",
     "test": "vitest run"
   },
   "dependencies": {

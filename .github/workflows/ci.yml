@@ -82,3 +82,27 @@ jobs:
           done
           # The compiled entry points load with only production dependencies.
           docker run --rm --entrypoint node ledger-service:ci --input-type=module -e "await import('/app/dist/src/app.js'); await import('/app/dist/src/worker/handlers.js'); await import('/app/dist/src/reconcile/run.js'); console.log('modules load')"
+
+  # The Kubernetes manifests, without a cluster: kustomize must render, every
+  # object must match the API schema (strict: unknown fields fail), and no
+  # Secret may be tracked. See scripts/k8s/validate.sh.
+  k8s-validate:
+    runs-on: ubuntu-latest
+    env:
+      KUBECONFORM_VERSION: v0.8.0
+      KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubeconform (pinned, checksum verified)
+        run: |
+          set -eu
+          curl -fsSL -o kubeconform.tar.gz "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  kubeconform.tar.gz" | sha256sum -c -
+          tar xzf kubeconform.tar.gz kubeconform
+          sudo mv kubeconform /usr/local/bin/kubeconform
+          kubectl version --client
+          kubeconform -v
+
+      - name: Validate manifests
+        run: scripts/k8s/validate.sh
