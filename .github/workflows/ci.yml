@@ -55,3 +55,30 @@ jobs:
 
       - name: Test
         run: npm test
+
+  # A broken Dockerfile must fail CI, not the first deploy. Builds both images
+  # (no push) and smoke-checks them.
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the ledger image (no push)
+        run: docker build --target app -t ledger-service:ci .
+
+      - name: Build the mock provider image (no push)
+        run: docker build --target mock-provider -t ledger-mock-provider:ci .
+
+      - name: Smoke-check the images
+        run: |
+          set -eu
+          # Both run as the non-root `node` user.
+          test "$(docker run --rm --entrypoint id ledger-service:ci -u)" = "1000"
+          test "$(docker run --rm --entrypoint id ledger-mock-provider:ci -u)" = "1000"
+          # No env files made it into either image.
+          for img in ledger-service:ci ledger-mock-provider:ci; do
+            found=$(docker run --rm --user root --entrypoint sh "$img" -c 'find / -xdev -name ".env*" 2>/dev/null | grep -v "^/proc" || true')
+            test -z "$found" || { echo "env file in $img: $found"; exit 1; }
+          done
+          # The compiled entry points load with only production dependencies.
+          docker run --rm --entrypoint node ledger-service:ci --input-type=module -e "await import('/app/dist/src/app.js'); await import('/app/dist/src/worker/handlers.js'); await import('/app/dist/src/reconcile/run.js'); console.log('modules load')"

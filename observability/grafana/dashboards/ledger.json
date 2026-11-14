@@ -6,7 +6,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "editable": false,
   "graphTooltip": 1,
   "refresh": "5s",
@@ -238,8 +238,8 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "Outbox lag",
-      "description": "Age of the oldest outbox row that is due but not sent yet. Near 0 = the worker keeps up.",
+      "title": "Outbox lag per lane",
+      "description": "Age of the oldest due row in each lane. commands = provider calls a user is waiting on; events = notifications.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -285,7 +285,7 @@
         },
         "colorMode": "value",
         "graphMode": "none",
-        "textMode": "value",
+        "textMode": "value_and_name",
         "justifyMode": "center"
       },
       "targets": [
@@ -295,8 +295,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(outbox_lag_seconds)",
-          "legendFormat": "",
+          "expr": "max by (lane) (outbox_lane_lag_seconds)",
+          "legendFormat": "{{lane}}",
           "instant": true
         }
       ]
@@ -662,8 +662,8 @@
     {
       "id": 22,
       "type": "timeseries",
-      "title": "Outbox lag and backlog",
-      "description": "Lag (left axis, seconds) = age of the oldest due row. Pending rows (right axis) includes rows waiting out a backoff.",
+      "title": "Outbox lag and backlog per lane",
+      "description": "Lag (left axis, seconds) = age of the oldest due row per lane. Pending rows (right axis) per lane, including rows waiting out a backoff.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -690,8 +690,8 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byName",
-              "options": "pending rows"
+              "id": "byRegexp",
+              "options": "pending .*"
             },
             "properties": [
               {
@@ -727,8 +727,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(outbox_lag_seconds)",
-          "legendFormat": "lag (s)",
+          "expr": "max by (lane) (outbox_lane_lag_seconds)",
+          "legendFormat": "lag {{lane}}",
           "range": true
         },
         {
@@ -737,8 +737,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(outbox_pending_rows)",
-          "legendFormat": "pending rows",
+          "expr": "max by (lane) (outbox_lane_pending_rows)",
+          "legendFormat": "pending {{lane}}",
           "range": true
         }
       ]

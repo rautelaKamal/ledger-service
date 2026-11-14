@@ -8,6 +8,10 @@ scrape_configs:
     static_configs:
       - targets: ["api:3000"]
 
+  # One target per lane worker. Both expose the same database-backed outbox
+  # gauges, so dashboards take max() of those and sum() of per-process counters.
+  # (No target label called "lane" here: the metrics already carry their own
+  # `lane` label, and a clashing target label would rename it to exported_lane.)
   - job_name: worker
     static_configs:
-      - targets: ["worker:9101"]
+      - targets: ["worker-commands:9101", "worker-events:9101"]

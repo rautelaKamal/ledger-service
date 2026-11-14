@@ -22,7 +22,8 @@ export type Handlers = Record<OutboxType, Handler>;
 
 export function createHandlers(deps: { provider: ProviderClient; sink: NotificationSink }): Handlers {
   const notify: Handler = async (row) => {
-    await deps.sink.deliver({ outboxId: row.id.toString(), type: row.type, payload: row.payload, createdAt: row.created_at });
+    const id = row.id.toString();
+    await deps.sink.deliver({ outboxId: id, sequence: id, type: row.type, payload: row.payload, createdAt: row.created_at });
   };
 
   return {

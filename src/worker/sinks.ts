@@ -2,12 +2,23 @@ import { currentRequestId } from '../context.js';
 
 // Where outbox EVENTS go ('transfer.posted', 'topup.posted', 'topup.failed').
 // Today a stand-in; later a queue, a webhook to another service, an analytics
-// pipeline. Whatever it is, it receives each event AT LEAST once and must
-// dedupe by outboxId.
+// pipeline. The delivery contract for consumers:
+//
+//   * AT LEAST ONCE: the same event can arrive twice (a worker crashed after
+//     delivering, before marking it sent). Dedupe by outboxId.
+//   * UNORDERED: several worker loops deliver in parallel, and a retried event
+//     arrives after later ones. Do not assume arrival order means anything.
+//   * `sequence` (= the outbox id) restores CREATION order: sort by it as a
+//     number (BigInt; ids are 64-bit). It is assigned when the row is inserted,
+//     so two transactions that commit in the opposite order can make a lower
+//     sequence arrive later. A gap is therefore not proof of a lost event.
+//   * `createdAt` is when the change that caused the event was written.
 
 export interface OutboxEvent {
   /** The outbox row id: the consumer's dedupe key. */
   outboxId: string;
+  /** Same value as outboxId, named for what consumers use it for: ordering. A decimal string (64-bit). */
+  sequence: string;
   type: string;
   payload: unknown;
   createdAt: Date;
@@ -87,7 +98,13 @@ export class HttpNotificationSink implements NotificationSink {
           // The id of the request that caused this event: the end of the trail.
           ...(currentRequestId() ? { 'x-request-id': currentRequestId()! } : {}),
         },
-        body: JSON.stringify({ outboxId: event.outboxId, type: event.type, payload: event.payload, createdAt: event.createdAt.toISOString() }),
+        body: JSON.stringify({
+          outboxId: event.outboxId,
+          sequence: event.sequence,
+          type: event.type,
+          payload: event.payload,
+          createdAt: event.createdAt.toISOString(),
+        }),
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
