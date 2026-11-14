@@ -63,6 +63,13 @@ k6_start() {
     --dry-run=client -o yaml | kc apply -f - >/dev/null
   kc delete job k6 --ignore-not-found --wait=true >/dev/null
   kc apply -f k8s/tools/k6/job.yaml >/dev/null
+  # `kubectl wait` with a selector fails at once if no pod matches yet; the Job
+  # controller creates the pod a moment after the Job. Wait for it to exist first.
+  local i
+  for i in $(seq 1 60); do
+    [ -n "$(kc get pods -l app=k6 -o name 2>/dev/null)" ] && break
+    sleep 1
+  done
   kc wait --for=condition=ready pod -l app=k6 --timeout=120s >/dev/null
 }
 
@@ -82,14 +89,16 @@ k6_collect() {
   sed '/^===SUMMARY===$/,$d' "$out/k6.log" | grep -E "http_req_failed|http_reqs|http_req_duration|checks|ledger_|✓|✗" | sed 's/^/    /' || true
   python3 - "$out/summary.json" <<'EOF'
 import json, sys
-s = json.load(open(sys.argv[1]))
-m = s["metrics"]
-failed = int(m["http_req_failed"]["values"].get("passes", 0))   # k6: "passes" = requests that FAILED
-total = int(m["http_reqs"]["values"]["count"])
-d = m["http_req_duration"]["values"]
-checks = m["checks"]["values"]
-print(f"    requests: {total}   failed: {failed}   p95: {d['p(95)']:.1f} ms   p99: {d['p(99)']:.1f} ms   max: {d['max']:.0f} ms   checks ok: {checks['rate']*100:.2f}%")
+# --summary-export writes each metric flat: {"http_reqs": {"count": ..}, "http_req_failed": {"passes": ..}}
+m = {k: v.get("values", v) for k, v in json.load(open(sys.argv[1]))["metrics"].items()}
+failed = int(m["http_req_failed"].get("passes", 0))   # k6: "passes" = requests that FAILED
+total = int(m["http_reqs"]["count"])
+d = m["http_req_duration"]
+checks = m["checks"]
+print(f"    requests: {total}   failed: {failed}   p95: {d['p(95)']:.1f} ms   p99: {d['p(99)']:.1f} ms   max: {d['max']:.0f} ms   checks ok: {checks['value']*100:.2f}%")
 EOF
 }
 
-k6_failed_requests() { python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["metrics"]["http_req_failed"]["values"].get("passes",0)))' "$1/summary.json"; }
+k6_failed_requests() {
+  python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))["metrics"]["http_req_failed"]; print(int(v.get("values", v).get("passes", 0)))' "$1/summary.json"
+}
