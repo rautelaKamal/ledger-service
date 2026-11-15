@@ -34,9 +34,11 @@ old=$(kc get pods -l app=api -o jsonpath='{.items[*].metadata.name}')
 echo "api pods before: $old"
 for p in $old; do
   kc logs -f "$p" > "$OUT/$p.log" 2>/dev/null & bg+=($!)
-  # Record the moment Kubernetes marked this pod for deletion.
-  ( while kc get pod "$p" -o jsonpath='{.metadata.deletionTimestamp}' > "$OUT/$p.deleted.tmp" 2>/dev/null; do
-      if [ -s "$OUT/$p.deleted.tmp" ]; then mv "$OUT/$p.deleted.tmp" "$OUT/$p.deleted"; break; fi; sleep 0.5; done ) & bg+=($!)
+  # Record when Kubernetes marked this pod for deletion. deletionTimestamp is
+  # NOT that moment: it is "when the pod will be gone", i.e. the request time
+  # plus deletionGracePeriodSeconds. Both are saved; the analysis subtracts.
+  ( while kc get pod "$p" -o jsonpath='{.metadata.deletionTimestamp} {.metadata.deletionGracePeriodSeconds}' > "$OUT/$p.deleted.tmp" 2>/dev/null; do
+      if [ -n "$(tr -d ' ' < "$OUT/$p.deleted.tmp")" ]; then mv "$OUT/$p.deleted.tmp" "$OUT/$p.deleted"; break; fi; sleep 0.5; done ) & bg+=($!)
 done
 # One line per second: which api pods exist, ready or not, terminating or not.
 ( while :; do
@@ -65,8 +67,10 @@ for p in $old; do
 import json, sys, datetime
 name, deleted_file, log_file = sys.argv[1:]
 try:
-    deleted = datetime.datetime.fromisoformat(open(deleted_file).read().strip().replace("Z", "+00:00")).timestamp()
-except FileNotFoundError:
+    stamp, grace = open(deleted_file).read().split()
+    # deletionTimestamp = request time + grace period, so the request was `grace` seconds earlier.
+    deleted = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() - int(grace)
+except (FileNotFoundError, ValueError):
     print(f"  {name}: deletionTimestamp not captured"); sys.exit(0)
 def when(j):  # pino writes "time" as an ISO string here (src/logger.ts); accept epoch ms too
     t = j["time"]
@@ -78,9 +82,14 @@ for line in open(log_file):
     if j.get("msg", "").startswith("shutdown started"): started = when(j)
     if j.get("msg") == "shutdown complete": done = when(j)
 if started is None:
+    # The follow can end mid-line on the pod's last write; the timestamp is usually still there.
+    import re
+    m = re.search(r'"time":"([^"]+)"[^\n]*"signal":"SIGTERM"', open(log_file).read())
+    if m: started = when({"time": m.group(1)})
+if started is None:
     print(f"  {name}: no 'shutdown started' line in its log"); sys.exit(0)
 drain = f"{done - started:.2f} s" if done else "n/a"
-print(f"  {name}: SIGTERM {started - deleted:.1f} s after deletion began (preStop sleep 5 s; deletionTimestamp has 1 s resolution), drained in {drain}")
+print(f"  {name}: SIGTERM {started - deleted:.1f} s after deletion began (preStop sleep 5 s + kubelet overhead; 1 s timestamp resolution), drained in {drain}")
 EOF
 done
 

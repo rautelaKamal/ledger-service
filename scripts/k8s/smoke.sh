@@ -13,6 +13,7 @@ need curl; need python3
 
 API_PORT=${API_PORT:-18080}
 PROVIDER_PORT=${PROVIDER_PORT:-18100}
+PROMETHEUS_PORT=${PROMETHEUS_PORT:-19090}
 pids=()
 cleanup() { for p in ${pids[@]+"${pids[@]}"}; do kill "$p" 2>/dev/null || true; done; }
 trap cleanup EXIT
@@ -77,7 +78,10 @@ log "4. metrics are internal"
 code=$(curl -sS -o /dev/null -w '%{http_code}' "$API/metrics")
 [ "$code" = 404 ] || die "public port serves /metrics ($code)"
 pass "GET /metrics on the public port: 404"
-kc exec deploy/prometheus -- wget -qO- http://127.0.0.1:9090/api/v1/targets > /tmp/smoke-targets.json
+# Through a port-forward with curl, not `kubectl exec ... wget` in the Prometheus
+# pod: its busybox wget crashed once (exit 139) and the pod should not need a client.
+pids+=("$(port_forward prometheus "$PROMETHEUS_PORT" 9090 /-/ready)")
+curl -sS "http://127.0.0.1:$PROMETHEUS_PORT/api/v1/targets" > /tmp/smoke-targets.json
 targets=$(python3 - /tmp/smoke-targets.json <<'EOF'
 import json, sys
 t = json.load(open(sys.argv[1]))["data"]["activeTargets"]
@@ -100,8 +104,8 @@ if kc exec deploy/mock-provider -- wget -T 3 -qO- http://worker-events:9101/metr
 pass "mock-provider -> worker-events:9101 blocked"
 kc exec deploy/mock-provider -- wget -T 3 -qO- http://api:3000/healthz >/dev/null 2>&1 || die "api public port NOT reachable from another pod"
 pass "mock-provider -> api:3000           allowed (the product)"
-kc exec deploy/prometheus -- wget -T 3 -qO- http://api-metrics:9100/metrics 2>/dev/null | grep -q '^http_requests_total' || die "Prometheus cannot reach the api metrics port"
-pass "prometheus     -> api-metrics:9100   allowed"
+# The positive control: Prometheus itself scrapes those ports (every target was "up" in step 4).
+pass "prometheus     -> api-metrics:9100   allowed (its scrapes succeed, step 4)"
 
 log "6. reconciliation"
 scripts/k8s/reconcile-now.sh | tail -12
