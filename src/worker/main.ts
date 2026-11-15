@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { createPool } from '../db.js';
 import { logger } from '../logger.js';
 import { HttpProviderClient } from '../provider/client.js';
+import { waitUntilReady } from '../readiness.js';
 import { createHandlers } from './handlers.js';
 import { startWorkerHttpServer } from './http.js';
 import { createWorkerMetrics } from './metrics.js';
@@ -78,9 +79,18 @@ function shutdown(signal: string): void {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-console.log('[worker] ready');
-logger.info({ lane: env.data.WORKER_LANE, concurrency: env.data.WORKER_CONCURRENCY }, 'worker ready');
-await worker.start();
+// Take no row before the database is reachable AND fully migrated. On a fresh
+// cluster the migrate Job may still be running when this process starts; the
+// HTTP server above already answers /healthz (alive) and /readyz (503) meanwhile.
+const ready = await waitUntilReady(pool, {
+  shouldStop: () => stopping,
+  onNotReady: (report) => logger.warn({ checks: report.checks, ...(report.pending ? { pending: report.pending } : {}) }, 'not ready: waiting for the database and migrations'),
+});
+if (ready) {
+  console.log('[worker] ready');
+  logger.info({ lane: env.data.WORKER_LANE, concurrency: env.data.WORKER_CONCURRENCY }, 'worker ready');
+  await worker.start();
+}
 await new Promise<void>((resolve) => http.close(() => resolve()));
 await pool.end();
 logger.info('worker stopped cleanly');

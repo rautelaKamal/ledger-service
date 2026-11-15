@@ -42,6 +42,9 @@ the database is reachable.
 | `npm run demo:outbox` | A top-up whose worker is killed mid-flight, then recovers    |
 | `npm run build`     | Compile to `dist/` (what the container image runs)             |
 | `npm run stack:up` / `stack:down` | Start / stop the full Docker stack           |
+| `npm run k8s:up` / `k8s:down` | Create / delete the local Kubernetes cluster (kind) with everything deployed |
+| `npm run k8s:smoke` / `k8s:zero-downtime` / `k8s:hpa-demo` | Prove the cluster works, rolls with 0 failed requests, autoscales |
+| `npm run k8s:validate` | Render and schema-check the manifests without a cluster |
 | `npm run typecheck` | TypeScript type check, no output files                         |
 | `npm test`          | Run the tests against the real `ledger_test` database          |
 
@@ -146,7 +149,7 @@ npm run stack:up        # build images, start everything, wait until healthy
 
 | | |
 |---|---|
-| API | <http://localhost:3000> (`/healthz`, `/readyz`, `/metrics`) |
+| API | <http://localhost:3000> (`/healthz`, `/readyz`; `/metrics` is on internal port 9100, scraped by Prometheus) |
 | Grafana | <http://localhost:3001>, dashboard **Ledger** (anonymous, read-only) |
 | Prometheus | <http://localhost:9090> |
 | Mock provider | <http://localhost:4100> |
@@ -172,6 +175,26 @@ delivered at least once and **unordered**; consumers sort by `sequence` (see ste
 [docs/STEP-06A-EXPLAINED.md](docs/STEP-06A-EXPLAINED.md) for health vs readiness,
 metrics, logs and the load-test results.
 
+## Run it on Kubernetes (locally, with kind)
+
+The same images on a one-node Kubernetes cluster inside Docker. Needs `kubectl`, `kind`
+(`brew install kind`) and about 1.5 GB of Docker memory. Manifests are plain kustomize
+(`k8s/base` + `k8s/overlays/kind`); Secrets come from your `.env` and are never committed.
+
+```bash
+npm run k8s:up             # create the cluster, build + load images, Secrets, apply, wait
+npm run k8s:smoke          # a transfer, a top-up, metrics internal, NetworkPolicy, reconcile
+npm run k8s:zero-downtime  # k6 in the cluster while the api is rolled: failed requests = 0
+npm run k8s:hpa-demo       # scale the api 2 -> 4 under load and back
+scripts/k8s/reconcile-now.sh                                   # run the nightly CronJob now
+kubectl --context kind-ledger -n ledger port-forward svc/grafana 3001:3000   # http://localhost:3001
+npm run k8s:validate       # render + schema-check the manifests (what CI runs; no cluster)
+npm run k8s:down           # delete the cluster
+```
+
+See [docs/STEP-06B-EXPLAINED.md](docs/STEP-06B-EXPLAINED.md) for what every object and
+setting is for, the zero-downtime and HPA results, and why production uses a managed database.
+
 ## Port 5432 already in use?
 
 If another Postgres already listens on 5432, set `POSTGRES_PORT=5434` (or any free port) in
@@ -179,7 +202,7 @@ If another Postgres already listens on 5432, set `POSTGRES_PORT=5434` (or any fr
 
 ## Resetting the database
 
-`db/init/00-roles.sql` creates the roles and databases. Docker runs it **only when the
+`k8s/base/postgres/init/00-roles.sql` creates the roles and databases. Docker runs it **only when the
 data volume is empty**. If you change that file, or want a completely fresh database,
 delete the volume:
 

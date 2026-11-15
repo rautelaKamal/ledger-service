@@ -10,7 +10,7 @@
   "scripts": {
     "db:up": "docker compose up -d --wait",
     "db:down": "docker compose down",
-    "db:roles": "docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f - < db/init/00-roles.sql",
+    "db:roles": "docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f - < k8s/base/postgres/init/00-roles.sql",
     "migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
     "dev": "tsx watch --env-file=.env src/server.ts",
     "demo:race": "tsx --env-file=.env scripts/demo-race.ts",
@@ -24,6 +24,12 @@
     "build": "tsc -p tsconfig.build.json",
     "stack:up": "docker compose -f docker-compose.full.yml up -d --build --wait",
     "stack:down": "docker compose -f docker-compose.full.yml down",
+    "k8s:up": "scripts/k8s/up.sh",
+    "k8s:smoke": "scripts/k8s/smoke.sh",
+    "k8s:zero-downtime": "scripts/k8s/zero-downtime.sh",
+    "k8s:hpa-demo": "scripts/k8s/hpa-demo.sh",
+    "k8s:validate": "scripts/k8s/validate.sh",
+    "k8s:down": "scripts/k8s/down.sh",
     "test": "vitest run"
   },
   "dependencies": {

@@ -4,9 +4,10 @@ global:
   evaluation_interval: 5s
 
 scrape_configs:
+  # The API serves /metrics on its internal METRICS_PORT, not on 3000.
   - job_name: api
     static_configs:
-      - targets: ["api:3000"]
+      - targets: ["api:9100"]
 
   # One target per lane worker. Both expose the same database-backed outbox
   # gauges, so dashboards take max() of those and sum() of per-process counters.

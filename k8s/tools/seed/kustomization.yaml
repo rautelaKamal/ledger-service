@@ -1,0 +1,7 @@
+# On-demand: seed accounts for the load tests (scripts/k8s/seed.sh).
+# Apply through an overlay (k8s/overlays/kind/seed) so the image tag is set.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ledger
+resources:
+  - job.yaml

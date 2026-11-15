@@ -1,4 +1,5 @@
 import type { Pool } from '../db.js';
+import { logger } from '../logger.js';
 import type { Handlers } from './handlers.js';
 import { processAvailable, processOneRow, type RowOutcome, type WorkerOptions } from './outbox.js';
 
@@ -41,8 +42,21 @@ export class Worker {
   private async loop(): Promise<void> {
     const pollIntervalMs = this.options.pollIntervalMs ?? 1_000;
     while (!this.stopping) {
-      const outcome = await processOneRow(this.pool, this.handlers, this.options);
-      if (outcome.status === 'idle' && !this.stopping) {
+      let idle = true;
+      try {
+        const outcome = await processOneRow(this.pool, this.handlers, this.options);
+        idle = outcome.status === 'idle';
+      } catch (err) {
+        // Getting a connection or claiming a row failed: Postgres restarting,
+        // too busy to accept a connection within the timeout, a dropped socket.
+        // Nothing was committed (the claim runs in a transaction that is rolled
+        // back), so the row is still there for the next poll. Log and carry on:
+        // a transient database error must not end the process. (In step 6b a
+        // 10 s connection timeout under load did exactly that, and the pod
+        // restarted mid-batch.)
+        logger.error({ err }, 'outbox poll failed; trying again after the poll interval');
+      }
+      if (idle && !this.stopping) {
         // Sleep, but wake immediately if stop() is called.
         await new Promise<void>((resolve) => {
           const wake = (): void => {

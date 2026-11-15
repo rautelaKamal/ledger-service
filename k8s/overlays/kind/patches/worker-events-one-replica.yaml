@@ -1,0 +1,8 @@
+# One events worker is enough for a laptop (4 loops in it).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-events
+  namespace: ledger
+spec:
+  replicas: 1

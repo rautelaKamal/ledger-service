@@ -5,7 +5,7 @@
 #   npm run stack:up        build images, start everything, wait until healthy
 #   npm run stack:down      stop (data kept in the ledger_full_pgdata volume)
 #
-#   API          http://localhost:3000   (/healthz /readyz /metrics)
+#   API          http://localhost:3000   (/healthz /readyz; /metrics is internal, port 9100)
 #   Grafana      http://localhost:3001   (anonymous read-only; dashboard "Ledger")
 #   Prometheus   http://localhost:9090
 #   Mock provider http://localhost:4100
@@ -46,7 +46,7 @@ services:
     command: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=100"]
     volumes:
       - ledger_full_pgdata:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - ./k8s/base/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d ledger"]
       interval: 2s
@@ -75,6 +75,9 @@ services:
     environment:
       DATABASE_URL: *app-url
       PORT: "3000"
+      # /metrics only on this internal port: not published to the host, only
+      # Prometheus (on the compose network) scrapes it.
+      METRICS_PORT: "9100"
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-local-compose-webhook-secret-not-for-production}
       SERVICE_NAME: api
       LOG_LEVEL: info
@@ -189,8 +192,9 @@ services:
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
       GF_NEWS_NEWS_FEED_ENABLED: "false"
     volumes:
-      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # Single copy, shared with Kubernetes (step 6b): the files live under k8s/.
+      - ./k8s/base/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./k8s/base/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
       - "3001:3000"
     depends_on:

@@ -1,0 +1,92 @@
+# Outbox worker, events lane: notifications (bulk, nobody is waiting).
+# Scaled two ways: WORKER_CONCURRENCY loops inside each pod, and replicas.
+# Step 6a.1 measured that one process tops out at ~1,200 rows/s on one core,
+# so beyond that you add pods, not loops. Running several pods at once is safe:
+# each row is claimed with FOR UPDATE SKIP LOCKED, so no two pods get the same one.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-events
+  labels:
+    app: worker-events
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: worker-events
+  template:
+    metadata:
+      labels:
+        app: worker-events
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: ledger-service
+          imagePullPolicy: IfNotPresent
+          command: ["node", "dist/src/worker/main.js"]
+          ports:
+            - name: metrics
+              containerPort: 9101
+          envFrom:
+            - configMapRef:
+                name: worker-config
+          env:
+            - name: WORKER_LANE
+              value: events
+            - name: WORKER_CONCURRENCY
+              value: "4"
+            - name: SERVICE_NAME
+              value: worker-events
+            - name: WORKER_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: ledger-secrets, key: WORKER_DATABASE_URL } }
+          startupProbe:
+            httpGet: { path: /healthz, port: metrics }
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /readyz, port: metrics }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 160Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker-events
+  labels:
+    app: worker-events
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: worker-events
+  ports:
+    - name: metrics
+      port: 9101
+      targetPort: metrics

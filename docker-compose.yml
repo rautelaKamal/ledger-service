@@ -13,7 +13,7 @@ services:
       # Named volume: data survives `docker compose down`, is wiped by `down -v`.
       - ledger_pgdata:/var/lib/postgresql/data
       # Files here run ONCE, only when the data volume is empty.
-      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - ./k8s/base/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       # Healthy = the server accepts connections to the ledger database.
       test: ["CMD-SHELL", "pg_isready -U postgres -d ledger"]

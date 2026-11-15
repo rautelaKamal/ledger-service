@@ -1,0 +1,33 @@
+# Local cluster (kind) on an 8 GB laptop. Everything kind-specific lives here:
+#   * image tags "local" (built on this machine, loaded with `kind load`)
+#   * one worker-events pod instead of two (memory)
+#   * the HPA scales down after 60 s instead of 5 min, so the demo ends in minutes
+#   * metrics-server for the HPA, with --kubelet-insecure-tls because kind's
+#     kubelets have self-signed certificates
+#
+#   scripts/k8s/up.sh   creates the cluster and applies this
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  # kubernetes-sigs/metrics-server v0.9.1 components.yaml, vendored as is
+  # (sha256 3c7f57cdbee0f57fb0259a150e8f6d6cb4f29d72d1aa5dce8803151dd6d4c2a1).
+  - metrics-server.yaml
+
+images:
+  - name: ledger-service
+    newTag: local
+  - name: ledger-mock-provider
+    newTag: local
+
+patches:
+  - path: patches/metrics-server-kubelet-insecure-tls.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: metrics-server
+      namespace: kube-system
+  - path: patches/worker-events-one-replica.yaml
+  - path: patches/hpa-fast-scale-down.yaml

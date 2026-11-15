@@ -1,0 +1,108 @@
+# Roles + migrations, as ONE Job that runs on every deploy.
+#
+#   init container "roles"   (postgres image, has psql, connects as the superuser)
+#     1. waits until Postgres accepts TCP connections
+#     2. runs 00-roles.sql: creates the four roles and the databases if missing
+#     3. sets each role's password from the Secret (00-roles.sql only knows the
+#        local defaults; the real passwords never appear in any manifest)
+#   container "migrate"      (ledger image, connects as ledger_owner)
+#     node dist/scripts/migrate.js: applies pending files under an advisory lock
+#
+# How app pods are kept from serving before this finished: they are not
+# blocked from STARTING, they are blocked from becoming READY. /readyz answers
+# 503 until the database is reachable AND every migration file is applied, so
+# the Service sends them no traffic until this Job is done. No polling script,
+# no init container in the api: the readiness check IS the ordering.
+#
+# Re-running on every deploy: a Job's pod template is immutable, so `kubectl
+# apply` with a new image tag is rejected ("field is immutable"). The deploy
+# script therefore DELETES the previous Job and recreates it (scripts/k8s/
+# deploy.sh), rather than using unique names + ttlSecondsAfterFinished. With a
+# fixed name the manifests stay static, `kubectl wait job/migrate` has a stable
+# target, and the last run's logs stay around until the next deploy replaces
+# them. (Unique names would need a per-deploy name injected into the manifests
+# and a TTL to stop old Jobs piling up.)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  labels:
+    app: migrate
+spec:
+  # Up to 4 attempts in total; each attempt is a fresh pod with its own logs.
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: migrate
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: roles
+          image: pgvector/pgvector:pg17
+          command: ["sh", "-ceu"]
+          args:
+            - |
+              until pg_isready -h postgres -U postgres -q; do echo "waiting for postgres..."; sleep 2; done
+              psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d postgres -f /init/00-roles.sql
+              # :'var' is psql's safe quoting: a password can hold any character.
+              psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d postgres \
+                -v owner="$LEDGER_OWNER_PASSWORD" -v app="$LEDGER_APP_PASSWORD" \
+                -v worker="$LEDGER_WORKER_PASSWORD" -v reconciler="$LEDGER_RECONCILER_PASSWORD" <<'SQL'
+              ALTER ROLE ledger_owner      PASSWORD :'owner';
+              ALTER ROLE ledger_app        PASSWORD :'app';
+              ALTER ROLE ledger_worker     PASSWORD :'worker';
+              ALTER ROLE ledger_reconciler PASSWORD :'reconciler';
+              SQL
+              echo "roles ready"
+          env:
+            - name: PGPASSWORD
+              valueFrom: { secretKeyRef: { name: ledger-secrets, key: POSTGRES_PASSWORD } }
+            - name: LEDGER_OWNER_PASSWORD
+              valueFrom: { secretKeyRef: { name: ledger-secrets, key: LEDGER_OWNER_PASSWORD } }
+            - name: LEDGER_APP_PASSWORD
+              valueFrom: { secretKeyRef: { name: ledger-secrets, key: LEDGER_APP_PASSWORD } }
+            - name: LEDGER_WORKER_PASSWORD
+              valueFrom: { secretKeyRef: { name: ledger-secrets, key: LEDGER_WORKER_PASSWORD } }
+            - name: LEDGER_RECONCILER_PASSWORD
+              valueFrom: { secretKeyRef: { name: ledger-secrets, key: LEDGER_RECONCILER_PASSWORD } }
+          volumeMounts:
+            - name: init
+              mountPath: /init
+              readOnly: true
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { cpu: 500m, memory: 64Mi }
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      containers:
+        - name: migrate
+          image: ledger-service
+          imagePullPolicy: IfNotPresent
+          command: ["node", "dist/scripts/migrate.js"]
+          env:
+            - name: OWNER_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: ledger-secrets, key: OWNER_DATABASE_URL } }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 128Mi }
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: init
+          configMap:
+            name: db-init

@@ -5,7 +5,7 @@
 // spawns the real API process. Log lines are captured with useLogger().
 
 import { randomUUID } from 'node:crypto';
-import { cp, mkdtemp, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,12 +16,13 @@ import { createPool, type Pool } from '../src/db.js';
 import { createLogger, useLogger } from '../src/logger.js';
 import { createApiMetrics } from '../src/metrics.js';
 import { MIGRATIONS_DIR } from '../src/migrations.js';
+import { waitUntilReady, type ReadinessReport } from '../src/readiness.js';
 import { recordRun, type ReconcileReport } from '../src/reconcile/run.js';
 import { createHandlers } from '../src/worker/handlers.js';
 import { startWorkerHttpServer } from '../src/worker/http.js';
 import { createWorkerMetrics } from '../src/worker/metrics.js';
 import { Worker } from '../src/worker/run.js';
-import { HttpNotificationSink } from '../src/worker/sinks.js';
+import { HttpNotificationSink, MemorySink } from '../src/worker/sinks.js';
 import { createAccount, fundAccount } from './helpers.js';
 import { TEST_WEBHOOK_SECRET, startTestServer, type TestServer } from './http.js';
 import { resetLedger } from './reset.js';
@@ -189,6 +190,48 @@ describe('health, readiness and shutdown', () => {
     30_000,
   );
 
+  test('9. waitUntilReady blocks while a migration is pending, resolves once it is applied, and gives up on request', async () => {
+    // Pending: the code knows a migration the database does not have.
+    const dir = await mkdtemp(join(tmpdir(), 'migrations-ahead-'));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const extra = join(dir, '999_not_applied_yet.sql');
+    await writeFile(extra, 'SELECT 1;');
+    const reports: ReadinessReport[] = [];
+    let resolved: boolean | undefined;
+    const waiting = waitUntilReady(workerPool, { migrationsDir: dir, intervalMs: 100, onNotReady: (r) => void reports.push(r) }).then((v) => (resolved = v));
+
+    await new Promise((r) => setTimeout(r, 450));
+    expect(resolved).toBeUndefined(); // still waiting ...
+    expect(reports.length).toBeGreaterThanOrEqual(3); // ... and checking regularly
+    expect(reports[0]).toMatchObject({ ready: false, checks: { database: 'up', migrations: 'pending' }, pending: ['999_not_applied_yet.sql'] });
+
+    await rm(extra); // "the migrate Job finished"
+    await waiting;
+    expect(resolved).toBe(true);
+
+    // Shutdown while waiting: returns false instead of waiting forever.
+    await writeFile(extra, 'SELECT 1;');
+    let stop = false;
+    const givingUp = waitUntilReady(workerPool, { migrationsDir: dir, intervalMs: 100, shouldStop: () => stop });
+    await new Promise((r) => setTimeout(r, 150));
+    stop = true;
+    expect(await givingUp).toBe(false);
+
+    // The database is unreachable: not ready, and it keeps waiting (no throw).
+    const deadPool = createPool('postgres://ledger_worker:x@127.0.0.1:9/nowhere');
+    try {
+      const down: ReadinessReport[] = [];
+      let stopDown = false;
+      const p = waitUntilReady(deadPool, { intervalMs: 50, shouldStop: () => stopDown, onNotReady: (r) => void down.push(r) });
+      await new Promise((r) => setTimeout(r, 200));
+      stopDown = true;
+      expect(await p).toBe(false);
+      expect(down[0]).toMatchObject({ ready: false, checks: { database: 'down' } });
+    } finally {
+      await deadPool.end();
+    }
+  });
+
   test('3. the worker HTTP server answers /healthz, /readyz and /metrics, including outbox and dead-row gauges', async () => {
     let stopping = false;
     const metrics = createWorkerMetrics(workerPool);
@@ -299,6 +342,49 @@ describe('metrics', () => {
     // The problems list itself is not exposed (and the worker cannot read it).
     await expect(workerPool.query('SELECT problems FROM reconciliation_runs')).rejects.toMatchObject({ code: '42501' });
   });
+
+  test(
+    '8. with METRICS_PORT set, /metrics is served only on that internal port, not on the API port',
+    async () => {
+      const [port, metricsPort] = [await freePort(), await freePort()];
+      const child = spawnTs('src/server.ts', [], {
+        PORT: String(port),
+        METRICS_PORT: String(metricsPort),
+        WEBHOOK_SECRET: TEST_WEBHOOK_SECRET,
+        LOG_LEVEL: 'info',
+      });
+      let output = '';
+      child.stdout.on('data', (d: Buffer) => (output += d.toString()));
+      child.stderr.on('data', (d: Buffer) => (output += d.toString()));
+      try {
+        for (let i = 0; i < 50 && !output.includes('api listening'); i++) await new Promise((r) => setTimeout(r, 100));
+        expect(output).toContain('api listening');
+        const api = `http://127.0.0.1:${port}`;
+        const internal = `http://127.0.0.1:${metricsPort}`;
+
+        expect((await fetch(`${api}/healthz`)).status).toBe(200); // the API port still serves the API ...
+        expect((await fetch(`${api}/metrics`)).status).toBe(404); // ... but no longer metrics
+
+        const scrape = await fetch(`${internal}/metrics`);
+        expect(scrape.status).toBe(200);
+        const text = await scrape.text();
+        // Same registry: the requests just made on the API port are counted here.
+        expect(sample(text, 'http_requests_total{method="GET",route="/healthz",status="200"}')).toBe(1);
+        expect(sample(text, 'http_requests_total{method="GET",route="unmatched",status="404"}')).toBe(1);
+        expect(text).toContain('ledger_api_process_resident_memory_bytes');
+
+        // The internal port serves nothing else.
+        expect((await fetch(`${internal}/healthz`)).status).toBe(404);
+        expect((await fetch(`${internal}/transfers`, { method: 'POST' })).status).toBe(404);
+
+        child.kill('SIGTERM');
+        expect(await exitWithin(child, 10_000), output).toEqual({ code: 0, signal: null });
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      }
+    },
+    30_000,
+  );
 });
 
 describe('logs', () => {
@@ -345,6 +431,50 @@ describe('logs', () => {
     // An unsafe incoming id is replaced, not echoed into logs and headers.
     const odd = await postTransfer(s.url, { fromAccountId: a, toAccountId: b, amountPaise: '1' }, { 'x-request-id': 'has spaces and "quotes"' });
     expect(odd.headers.get('x-request-id')).toMatch(UUID);
+  });
+
+  test('10. an idle database connection dying is a warning line, not the end of the process', async () => {
+    // pg emits 'error' on the pool for an idle client whose socket dropped. With
+    // no listener Node would exit (that is how worker-events died in step 6b).
+    const pool = createPool(process.env.WORKER_DATABASE_URL!, { max: 1 });
+    try {
+      await pool.query('SELECT 1'); // one idle client now exists
+      const { lines } = await captureLogs(async () => {
+        pool.emit('error', new Error('read ECONNRESET'), {} as never); // what pg does when the socket resets
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({ level: 'warn', msg: expect.stringContaining('idle database connection dropped') as string });
+      expect(JSON.stringify(lines[0])).toContain('ECONNRESET');
+      // Still alive, still usable.
+      expect((await pool.query<{ n: number }>('SELECT 1 AS n')).rows[0]?.n).toBe(1);
+    } finally {
+      await pool.end();
+    }
+  });
+
+  test('11. the worker loop survives a database it cannot reach: logs, keeps polling, still stops cleanly', async () => {
+    const deadPool = createPool('postgres://ledger_worker:x@127.0.0.1:9/nowhere', { max: 2 });
+    try {
+      const worker = new Worker(deadPool, createHandlers({ provider: { createPayment: async () => ({ paymentId: 'x' }) }, sink: new MemorySink() }), {
+        lane: 'events',
+        concurrency: 2,
+        pollIntervalMs: 20,
+      });
+      const { result, lines } = await captureLogs(async () => {
+        const running = worker.start();
+        await new Promise((r) => setTimeout(r, 250)); // several failed polls
+        worker.stop();
+        return Promise.race([running.then(() => 'stopped'), new Promise<string>((r) => setTimeout(() => r('still running'), 2_000))]);
+      });
+      expect(result).toBe('stopped'); // start() resolved after stop(): no loop was stuck or dead
+      const failures = lines.filter((l) => l.msg === 'outbox poll failed; trying again after the poll interval');
+      expect(failures.length).toBeGreaterThanOrEqual(2); // it kept trying ...
+      expect(failures.length).toBeLessThan(100); // ... at the poll interval, not in a hot loop
+      expect(failures[0]).toMatchObject({ level: 'error' });
+    } finally {
+      await deadPool.end();
+    }
   });
 
   test('7. webhook logs record what happened, never the signature, the secret or the raw body', async () => {

@@ -1,0 +1,113 @@
+# The API: 2+ identical pods behind the `api` Service.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  labels:
+    app: api
+spec:
+  # The HPA (api/hpa.yaml) owns the count at run time between 2 and 4; this is
+  # the starting point and matches its minimum.
+  replicas: 2
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never take a pod away before its replacement is Ready: at every moment
+      # of a rollout there are at least `replicas` ready pods. The price is
+      # one extra pod's worth of resources during the rollout.
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      # preStop sleep (5 s) + SHUTDOWN_GRACE_MS (25 s) + margin. After this,
+      # SIGKILL. If this were SHORTER than the app's own grace, Kubernetes would
+      # kill requests the app was still politely finishing.
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        # The image's `node` user.
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: ledger-service
+          imagePullPolicy: IfNotPresent
+          # node directly, never via npm: SIGTERM must reach the process.
+          command: ["node", "dist/src/server.js"]
+          ports:
+            - name: http
+              containerPort: 3000
+            - name: metrics
+              containerPort: 9100
+          envFrom:
+            - configMapRef:
+                name: api-config
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: ledger-secrets, key: DATABASE_URL } }
+            - name: WEBHOOK_SECRET
+              valueFrom: { secretKeyRef: { name: ledger-secrets, key: WEBHOOK_SECRET } }
+          # Three probes, three questions:
+          #   startup:   has the process come up at all? (up to 2 min; until it
+          #              passes, the other two probes are not run, so a slow
+          #              start on a busy node is never mistaken for a hang)
+          #   readiness: should this pod get traffic right now? (/readyz: DB up,
+          #              migrations applied, not shutting down). Failing it
+          #              removes the pod from the Service; nothing is restarted.
+          #   liveness:  is the process stuck? (/healthz, no dependencies, so a
+          #              database outage never makes Kubernetes restart healthy
+          #              pods). Failing it restarts the container.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          lifecycle:
+            preStop:
+              # Why sleep before SIGTERM: when a pod starts terminating, Kubernetes
+              # does two things AT THE SAME TIME: it tells the Service to stop
+              # routing to this pod, and it stops the container. The first is
+              # asynchronous: every node's routing rules (kube-proxy) learn about
+              # it a moment later. Without this pause the app would stop
+              # accepting while some requests are still being routed to it, and
+              # those requests fail. Five seconds lets the routing catch up; only
+              # then does SIGTERM arrive and the app drain what it has.
+              # (Kubernetes' built-in sleep action: no shell needed in the image.)
+              sleep:
+                seconds: 5
+          resources:
+            # Requests are what the scheduler reserves and what the HPA's CPU %
+            # is relative to (60 % of 100m = 60m). Limits are the hard ceiling.
+            requests:
+              cpu: 100m
+              memory: 96Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The process writes nothing to disk (logs go to stdout), so the
+            # whole filesystem can be read-only: a compromised process cannot
+            # alter its own code or drop files.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

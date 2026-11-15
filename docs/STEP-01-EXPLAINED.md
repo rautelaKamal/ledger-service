@@ -68,7 +68,7 @@ one unit (paise) everywhere means no rounding decisions anywhere.
 | `.env.example` | Template for `.env` (dev database `ledger`). | Shows which variables exist. Contains **local-only** values. You copy it to `.env`. |
 | `.env.test.example` | Template for `.env.test` (test database `ledger_test`). | Same variable names, different database, so tests never touch your dev data. |
 | `docker-compose.yml` | Runs Postgres 17 (`pgvector/pgvector:pg17`) with a named volume and a healthcheck. | Everyone gets the same database. The volume keeps data across restarts. The healthcheck lets `db:up` wait until Postgres is actually ready. The host port comes from `POSTGRES_PORT` (default 5432) in case another project already uses 5432. |
-| `db/init/00-roles.sql` | Creates the roles `ledger_owner` and `ledger_app` and the databases `ledger` and `ledger_test`. Runs as superuser. | Roles and databases belong to the whole server, and creating them needs superuser rights, which the migration role must not have. Docker runs this file only on an **empty volume**. CI runs it with `psql`. |
+| `k8s/base/postgres/init/00-roles.sql` | Creates the roles `ledger_owner` and `ledger_app` and the databases `ledger` and `ledger_test`. Runs as superuser. | Roles and databases belong to the whole server, and creating them needs superuser rights, which the migration role must not have. Docker runs this file only on an **empty volume**. CI runs it with `psql`. |
 | `migrations/001_ledger_core.sql` | Tables, constraints, triggers and grants. | The schema lives in versioned, reviewable SQL. |
 | `scripts/migrate.ts` | ~50-line migration runner. | Applies each new `.sql` file in its **own** `BEGIN … COMMIT`, together with the row in `schema_migrations` that records it. A half-applied migration is impossible. |
 | `src/config.ts` | Reads and validates env vars with zod. | The app crashes at startup with a clear message instead of failing on the first query. |
@@ -133,7 +133,7 @@ both would scan the whole table.
 
 | Role | Used by | Can |
 | ---- | ------- | --- |
-| `postgres` | `db/init/00-roles.sql` only | Everything (superuser). Never used by the app. |
+| `postgres` | `k8s/base/postgres/init/00-roles.sql` only | Everything (superuser). Never used by the app. |
 | `ledger_owner` | migrations, test setup | Owns the tables: create and alter them, TRUNCATE. Cannot create roles or databases. |
 | `ledger_app` | the API | Only what's listed below. |
 
@@ -166,7 +166,7 @@ attacker who controls the API) is that `ledger_app` simply lacks the privilege. 
 why there is no TRUNCATE trigger: `ledger_app` has no TRUNCATE privilege, which is the
 real protection, and the owner needs TRUNCATE to reset the test database.
 
-**Why roles live in `db/init/00-roles.sql` and not in a migration:** roles and databases
+**Why roles live in `k8s/base/postgres/init/00-roles.sql` and not in a migration:** roles and databases
 are cluster-wide, and creating them needs superuser rights. Migrations run per database
 (`ledger` *and* `ledger_test`) as `ledger_owner`, which can't create roles, and *should*
 not be able to.
@@ -264,7 +264,7 @@ Other things not enforced yet, for later steps:
 2. Why is `UNIQUE (id, currency)` on `accounts` needed when `id` is already the primary key?
 3. Test 2 expects two *different* errors for `ledger_app` and `ledger_owner`. Why, and which of the two is the real security boundary?
 4. Why can't the tests just wrap every test in `BEGIN … ROLLBACK` and skip the TRUNCATE?
-5. Why are roles created in `db/init/00-roles.sql` rather than in `migrations/001_ledger_core.sql`?
+5. Why are roles created in `k8s/base/postgres/init/00-roles.sql` rather than in `migrations/001_ledger_core.sql`?
 6. What could go wrong if BIGINT values were read into JavaScript `number`s? Give an amount where it breaks.
 7. Why is `amount_paise` always positive, with the sign carried by `direction`, instead of storing signed amounts?
 8. The "Known gap" says `balance_paise` can be wrong. If entries are the source of truth, why keep a cached balance at all?
