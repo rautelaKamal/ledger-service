@@ -505,6 +505,17 @@ Also learned: a load script that dies must delete its k6 Job, or 40 virtual
 users keep hammering a cluster whose control plane is already down (both
 scripts now do that on exit).
 
+**What the fixes do and do not do.** After them, the fresh cluster came up
+with zero restarts, the smoke test passed, the rollout test failed zero
+requests, and the control plane never went down again. But a later deploy
+that rolled Grafana still restarted one api pod and the events worker: their
+`/healthz` went unanswered for 60 s straight, which means the VM itself
+stalled for a minute (this Mac has 8 GB, Docker gets 3.8 GiB, and the node
+sat at 2.1 GiB). The worker's log for that minute shows the fix working:
+four `connection timeout` errors logged, no crash, `stopped cleanly` on the
+SIGTERM. The manifests make the system *survive* a stalled machine; they
+cannot make the machine faster. 6c runs on a cluster with its own CPUs.
+
 ---
 
 ## 9. CI without a cluster
