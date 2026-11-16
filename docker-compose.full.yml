@@ -35,6 +35,7 @@ x-db-urls:
   owner: &owner-url postgres://ledger_owner:ledger_owner_local@postgres:5432/ledger
   worker: &worker-url postgres://ledger_worker:ledger_worker_local@postgres:5432/ledger
   reconciler: &reconciler-url postgres://ledger_reconciler:ledger_reconciler_local@postgres:5432/ledger
+  agent: &agent-url postgres://ledger_agent:ledger_agent_local@postgres:5432/ledger
 
 services:
   postgres:
@@ -162,6 +163,30 @@ services:
       retries: 12
     restart: unless-stopped
     mem_limit: 96m
+
+  # The assistant service (step 7a: probes and read-only tools, no model yet).
+  # Its own image (Python), its own database role: ledger_agent, SELECT on views
+  # only, row-filtered to the client of each request.
+  agent:
+    image: ledger-agent:local
+    build:
+      context: ./agent
+    environment:
+      AGENT_DATABASE_URL: *agent-url
+      PORT: "8000"
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # python:slim has no curl or wget; python itself is the probe.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    mem_limit: 192m
 
   prometheus:
     image: prom/prometheus:v3.15.1
