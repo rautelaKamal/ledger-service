@@ -45,15 +45,23 @@ export async function withCommit<T>(pool: Pool, fn: (client: PoolClient) => Prom
   }
 }
 
+/** The X-Client-Id the tests act as, and therefore the owner of the user accounts they create. */
+export const TEST_CLIENT = 'test-client';
+
+/**
+ * Since step 7a a user account belongs to exactly one client (owner_client_id);
+ * a system account to nobody. `owner` is ignored for system accounts.
+ */
 export async function createAccount(
   db: Queryable,
   kind: 'user' | 'system',
   currency = 'INR',
   name = `test ${kind} account`,
+  owner: string = TEST_CLIENT,
 ): Promise<string> {
   const { rows } = await db.query<{ id: string }>(
-    `INSERT INTO accounts (name, kind, currency) VALUES ($1, $2, $3) RETURNING id`,
-    [name, kind, currency],
+    `INSERT INTO accounts (name, kind, currency, owner_client_id) VALUES ($1, $2, $3, $4) RETURNING id`,
+    [name, kind, currency, kind === 'user' ? owner : null],
   );
   return rows[0]!.id;
 }

@@ -23,7 +23,7 @@ import { startWorkerHttpServer } from '../src/worker/http.js';
 import { createWorkerMetrics } from '../src/worker/metrics.js';
 import { Worker } from '../src/worker/run.js';
 import { HttpNotificationSink, MemorySink } from '../src/worker/sinks.js';
-import { createAccount, fundAccount } from './helpers.js';
+import { TEST_CLIENT, createAccount, fundAccount } from './helpers.js';
 import { TEST_WEBHOOK_SECRET, startTestServer, type TestServer } from './http.js';
 import { resetLedger } from './reset.js';
 import { exitWithin, freePort, spawnTs } from './spawn.js';
@@ -78,7 +78,7 @@ async function postTransfer(
 ): Promise<{ status: number; headers: Headers; json: unknown }> {
   const res = await fetch(`${url}/transfers`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-client-id': 'obs-client', 'idempotency-key': `key-${randomUUID()}`, ...headers },
+    headers: { 'content-type': 'application/json', 'x-client-id': TEST_CLIENT, 'idempotency-key': `key-${randomUUID()}`, ...headers },
     body: JSON.stringify(body),
   });
   return { status: res.status, headers: res.headers, json: await res.json() };

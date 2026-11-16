@@ -16,7 +16,7 @@ import { recordRun, runReconciliation, type ReconcileReport } from '../src/recon
 import { createHandlers } from '../src/worker/handlers.js';
 import { Worker } from '../src/worker/run.js';
 import { MemorySink } from '../src/worker/sinks.js';
-import { createAccount, fundAccount } from './helpers.js';
+import { TEST_CLIENT, createAccount, fundAccount } from './helpers.js';
 import { TEST_WEBHOOK_SECRET, startTestServer, type TestServer } from './http.js';
 import { resetLedger } from './reset.js';
 import { exitOf, spawnTs } from './spawn.js';
@@ -61,7 +61,7 @@ async function runCli(env: Record<string, string> = {}): Promise<{ code: number 
 async function postTopup(accountId: string): Promise<string> {
   const res = await fetch(`${server.url}/topups`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-client-id': 'reconcile-client', 'idempotency-key': `key-${randomUUID()}` },
+    headers: { 'content-type': 'application/json', 'x-client-id': TEST_CLIENT, 'idempotency-key': `key-${randomUUID()}` },
     body: JSON.stringify({ accountId, amountPaise: '5000' }),
   });
   expect(res.status).toBe(202);

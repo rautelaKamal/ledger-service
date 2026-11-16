@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
 import { createPool, type Pool } from '../src/db.js';
 import { deleteExpiredIdempotencyKeys, runIdempotent } from '../src/idempotency.js';
-import { balanceOf, createAccount, expectLedgerReconciles, fundAccount } from './helpers.js';
+import { TEST_CLIENT, balanceOf, createAccount, expectLedgerReconciles, fundAccount } from './helpers.js';
 import { TEST_KEY_CLAIM_TIMEOUT_MS, postTransfer, startTestServer, type TestServer } from './http.js';
 import { resetLedger } from './reset.js';
 
@@ -17,7 +17,7 @@ let app: Pool; // ledger_app
 let owner: Pool; // ledger_owner
 let server: TestServer;
 
-const CLIENT = 'test-client';
+const CLIENT = TEST_CLIENT; // the owner of the accounts createAccount makes
 const newKey = (): string => `key-${randomUUID()}`;
 
 beforeAll(async () => {
@@ -159,17 +159,24 @@ describe('POST /transfers with Idempotency-Key', () => {
   });
 
   test('7. keys are scoped per client: the same key from two clients is two transfers', async () => {
-    const { a, b, body } = await setupPair();
+    // Since step 7a each client can only spend from its own account, so the
+    // two clients send from two accounts (same key, same amount, same payee).
+    const { b } = await setupPair(0n);
+    const one = await createAccount(app, 'user', 'INR', 'one', 'client-one');
+    const two = await createAccount(app, 'user', 'INR', 'two', 'client-two');
+    await fundAccount(owner, one, 5_000n);
+    await fundAccount(owner, two, 5_000n);
     const key = newKey();
 
-    const one = await postTransfer(server.url, { key, clientId: 'client-one', body });
-    const two = await postTransfer(server.url, { key, clientId: 'client-two', body });
+    const first = await postTransfer(server.url, { key, clientId: 'client-one', body: { fromAccountId: one, toAccountId: b, amountPaise: '2500' } });
+    const second = await postTransfer(server.url, { key, clientId: 'client-two', body: { fromAccountId: two, toAccountId: b, amountPaise: '2500' } });
 
-    expect(one.status).toBe(201);
-    expect(two.status).toBe(201);
-    expect(two.headers.get('idempotent-replayed')).toBeNull();
-    expect(two.json).not.toEqual(one.json);
-    expect(await balanceOf(app, a)).toBe(5_000n);
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(second.headers.get('idempotent-replayed')).toBeNull();
+    expect(second.json).not.toEqual(first.json);
+    expect(await balanceOf(app, one)).toBe(2_500n);
+    expect(await balanceOf(app, two)).toBe(2_500n);
     expect(await balanceOf(app, b)).toBe(5_000n);
   });
 

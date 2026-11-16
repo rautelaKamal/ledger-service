@@ -17,7 +17,7 @@ import { createHandlers, type Handlers } from '../src/worker/handlers.js';
 import { backoffMs, processOneRow, type WorkerOptions } from '../src/worker/outbox.js';
 import { Worker } from '../src/worker/run.js';
 import { MemorySink, type NotificationSink } from '../src/worker/sinks.js';
-import { balanceOf, createAccount, expectLedgerReconciles, fundAccount, withRollback } from './helpers.js';
+import { TEST_CLIENT, balanceOf, createAccount, expectLedgerReconciles, fundAccount, withRollback } from './helpers.js';
 import { TEST_WEBHOOK_SECRET, startTestServer, type TestServer } from './http.js';
 import { resetLedger } from './reset.js';
 import { exitWithin, spawnTs } from './spawn.js';
@@ -28,7 +28,7 @@ let workerPool: Pool; // ledger_worker
 let server: TestServer;
 let provider: MockProvider;
 
-const CLIENT = 'outbox-client';
+const CLIENT = TEST_CLIENT; // the owner of the accounts createAccount makes
 
 beforeAll(async () => {
   app = createPool(process.env.DATABASE_URL!, { max: 20 });
