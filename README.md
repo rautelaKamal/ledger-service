@@ -45,6 +45,7 @@ the database is reachable.
 | `npm run k8s:up` / `k8s:down` | Create / delete the local Kubernetes cluster (kind) with everything deployed |
 | `npm run k8s:smoke` / `k8s:zero-downtime` / `k8s:hpa-demo` | Prove the cluster works, rolls with 0 failed requests, autoscales |
 | `npm run k8s:validate` | Render and schema-check the manifests without a cluster |
+| `cd agent && uv run pytest` | The assistant service's tests, as `ledger_agent` (see below) |
 | `npm run typecheck` | TypeScript type check, no output files                         |
 | `npm test`          | Run the tests against the real `ledger_test` database          |
 
@@ -174,6 +175,25 @@ delivered at least once and **unordered**; consumers sort by `sequence` (see ste
 `npm run build` compiles to `dist/` (what the image runs). See
 [docs/STEP-06A-EXPLAINED.md](docs/STEP-06A-EXPLAINED.md) for health vs readiness,
 metrics, logs and the load-test results.
+
+## The assistant service (`agent/`, step 7)
+
+A separate Python 3.12 program (FastAPI, psycopg 3, `uv`) that reads the ledger as the
+database role `ledger_agent`: SELECT on four views only, every row filtered by Postgres
+row-level security to the client of the request. Step 7a is the fence (ownership, role,
+views, three read-only tools); the model comes in 7b.
+
+```bash
+cd agent
+uv sync                      # Python 3.12 + locked dependencies (needs uv: https://docs.astral.sh/uv/)
+uv run pytest                # against ledger_test (migrated by `npm test`), as ledger_agent
+uv run ruff check . && uv run ruff format --check . && uv run mypy
+uv run uvicorn ledger_agent.api:app --port 8000      # AGENT_DATABASE_URL from the environment
+```
+
+Accounts now belong to a client: `POST /transfers` and `POST /topups` answer 404 for an
+account the caller does not own, exactly like a missing one. See
+[docs/STEP-07A-EXPLAINED.md](docs/STEP-07A-EXPLAINED.md).
 
 ## Run it on Kubernetes (locally, with kind)
 
