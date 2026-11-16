@@ -30,6 +30,10 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledger_reconciler') THEN
         CREATE ROLE ledger_reconciler LOGIN PASSWORD 'ledger_reconciler_local' NOSUPERUSER NOCREATEDB NOCREATEROLE;
     END IF;
+    -- The AI assistant (step 7): SELECT on a few views, row-filtered to one client.
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledger_agent') THEN
+        CREATE ROLE ledger_agent LOGIN PASSWORD 'ledger_agent_local' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+    END IF;
 END;
 $$;
 
@@ -42,4 +46,4 @@ SELECT 'CREATE DATABASE ledger_test OWNER ledger_owner'
 
 -- By default every role may CONNECT to every database. Restrict that.
 REVOKE CONNECT ON DATABASE ledger, ledger_test FROM PUBLIC;
-GRANT  CONNECT ON DATABASE ledger, ledger_test TO ledger_owner, ledger_app, ledger_worker, ledger_reconciler;
+GRANT  CONNECT ON DATABASE ledger, ledger_test TO ledger_owner, ledger_app, ledger_worker, ledger_reconciler, ledger_agent;

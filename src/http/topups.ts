@@ -52,12 +52,19 @@ export function topupsRouter(pool: Pool, metrics: ApiMetrics, options: Idempoten
         { ...headers, requestHash: topupRequestHash(body) },
         async (client) => {
           // Who is being topped up, and can we settle in their currency?
-          const { rows } = await client.query<{ id: string; kind: string; currency: string }>(
-            'SELECT id, kind, currency FROM accounts WHERE id = $1',
+          const { rows } = await client.query<{ id: string; kind: string; currency: string; owner_client_id: string | null }>(
+            'SELECT id, kind, currency, owner_client_id FROM accounts WHERE id = $1',
             [body.accountId],
           );
           const account = rows[0];
-          if (!account) {
+          // Ownership (step 7a): only the owner may top an account up. Not
+          // yours (or not there, or a system account, which nobody owns): the
+          // same 404 as "does not exist", so ids cannot be probed. See transfers.ts.
+          if (!account || account.owner_client_id !== headers.clientId) {
+            logger.info(
+              { client_id: headers.clientId, account_id: body.accountId, reason: account ? 'not_owner' : 'missing' },
+              'top-up refused: 404',
+            );
             return { status: 404, body: errorBody('account_not_found', `account ${body.accountId} does not exist`) };
           }
           if (account.kind !== 'user') {

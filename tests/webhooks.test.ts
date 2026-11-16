@@ -14,7 +14,7 @@ import { transfer } from '../src/ledger/transfer.js';
 import { createHandlers } from '../src/worker/handlers.js';
 import { Worker } from '../src/worker/run.js';
 import { MemorySink } from '../src/worker/sinks.js';
-import { PG, balanceOf, createAccount, expectLedgerReconciles, fundAccount } from './helpers.js';
+import { PG, TEST_CLIENT, balanceOf, createAccount, expectLedgerReconciles, fundAccount } from './helpers.js';
 import { TEST_WEBHOOK_SECRET, startTestServer, type HttpResult, type TestServer } from './http.js';
 import { resetLedger } from './reset.js';
 
@@ -28,7 +28,7 @@ let worker: Worker;
 /** Lets one test make the next webhook commit fail. */
 let failNextCommit: Error | null = null;
 
-const CLIENT = 'topup-client';
+const CLIENT = TEST_CLIENT; // the owner of the accounts createAccount makes
 const newKey = (): string => `key-${randomUUID()}`;
 const nowSeconds = (): number => Math.floor(Date.now() / 1000);
 
@@ -349,7 +349,8 @@ describe('top-ups and provider webhooks', () => {
     const before = await owner.query<{ n: number }>('SELECT count(*)::int AS n FROM transactions');
 
     expect(await postTopup(randomUUID(), '100')).toMatchObject({ status: 404, json: { error: { code: 'account_not_found' } } });
-    expect(await postTopup(system, '100')).toMatchObject({ status: 422, json: { error: { code: 'not_a_user_account' } } });
+    // Since step 7a a system account, which nobody owns, is "not found" for every caller (ownership is checked first).
+    expect(await postTopup(system, '100')).toMatchObject({ status: 404, json: { error: { code: 'account_not_found' } } });
     expect(await postTopup(usd, '100')).toMatchObject({ status: 422, json: { error: { code: 'unsupported_currency' } } });
 
     const after = await owner.query<{ n: number }>('SELECT count(*)::int AS n FROM transactions');

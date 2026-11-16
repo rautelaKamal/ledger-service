@@ -66,6 +66,24 @@ export function transfersRouter(pool: Pool, metrics: ApiMetrics, options: Idempo
         pool,
         { ...headers, requestHash: transferRequestHash(body) },
         async (client) => {
+          // Ownership (step 7a): only the account's owner may spend from it.
+          // Same 404 and the same body as a non-existent account, on purpose:
+          // a caller probing ids must learn nothing, not even "this id exists".
+          // The real reason goes to the log. toAccountId stays open: paying
+          // someone is the point, and an id you can pay is like an account
+          // number on an invoice. This is a business answer, so it is stored
+          // under the key and replayed like the others.
+          const owner = await client.query<{ owner_client_id: string | null }>(
+            'SELECT owner_client_id FROM accounts WHERE id = $1',
+            [body.fromAccountId],
+          );
+          if (owner.rows[0]?.owner_client_id !== headers.clientId) {
+            logger.info(
+              { client_id: headers.clientId, from_account_id: body.fromAccountId, reason: owner.rows[0] ? 'not_owner' : 'missing' },
+              'transfer refused: 404',
+            );
+            return { status: 404, body: errorBody('account_not_found', `account ${body.fromAccountId} does not exist`) };
+          }
           try {
             const { transactionId } = await transferWithClient(client, {
               fromAccountId: body.fromAccountId,

@@ -177,7 +177,7 @@ describe('database guarantees', () => {
 
     // The database fills the starting balance itself.
     const { rows } = await app.query<{ id: string; balance_paise: bigint }>(
-      `INSERT INTO accounts (name, kind, currency) VALUES ('normal', 'user', 'INR') RETURNING id, balance_paise`,
+      `INSERT INTO accounts (name, kind, currency, owner_client_id) VALUES ('normal', 'user', 'INR', 'test-client') RETURNING id, balance_paise`,
     );
     expect(rows[0]?.balance_paise).toBe(0n);
 

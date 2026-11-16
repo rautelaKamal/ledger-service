@@ -30,6 +30,7 @@ jobs:
       OWNER_DATABASE_URL: postgres://ledger_owner:ledger_owner_local@localhost:5432/ledger_test
       WORKER_DATABASE_URL: postgres://ledger_worker:ledger_worker_local@localhost:5432/ledger_test
       RECONCILER_DATABASE_URL: postgres://ledger_reconciler:ledger_reconciler_local@localhost:5432/ledger_test
+      AGENT_DATABASE_URL: postgres://ledger_agent:ledger_agent_local@localhost:5432/ledger_test
 
     steps:
       - uses: actions/checkout@v4
@@ -82,6 +83,61 @@ jobs:
           done
           # The compiled entry points load with only production dependencies.
           docker run --rm --entrypoint node ledger-service:ci --input-type=module -e "await import('/app/dist/src/app.js'); await import('/app/dist/src/worker/handlers.js'); await import('/app/dist/src/reconcile/run.js'); console.log('modules load')"
+
+  # The assistant service (agent/): lint, format, types, and its tests against
+  # the real, migrated database as ledger_agent.
+  python:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres # throwaway CI-only container
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      OWNER_DATABASE_URL: postgres://ledger_owner:ledger_owner_local@localhost:5432/ledger_test
+      AGENT_DATABASE_URL: postgres://ledger_agent:ledger_agent_local@localhost:5432/ledger_test
+    steps:
+      - uses: actions/checkout@v4
+
+      # The migrations are TypeScript: node runs them, then Python takes over.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies (for the migration runner)
+        run: npm ci
+        working-directory: .
+      - name: Create roles and databases (as postgres superuser)
+        env:
+          PGPASSWORD: postgres
+        run: psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d postgres -f k8s/base/postgres/init/00-roles.sql
+        working-directory: .
+      - name: Run migrations against ledger_test
+        run: npm run migrate
+        working-directory: .
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.8"
+      - name: Install (exactly uv.lock)
+        run: uv sync --frozen
+      - name: Lint and format
+        run: uv run ruff check . && uv run ruff format --check .
+      - name: Types
+        run: uv run mypy
+      - name: Test
+        run: uv run pytest
 
   # The Kubernetes manifests, without a cluster: kustomize must render, every
   # object must match the API schema (strict: unknown fields fail), and no
