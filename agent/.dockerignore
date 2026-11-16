@@ -4,3 +4,6 @@
 .pytest_cache
 __pycache__
 tests
+.env
+.env.*
+!.env.example

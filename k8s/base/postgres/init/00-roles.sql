@@ -47,3 +47,12 @@ SELECT 'CREATE DATABASE ledger_test OWNER ledger_owner'
 -- By default every role may CONNECT to every database. Restrict that.
 REVOKE CONNECT ON DATABASE ledger, ledger_test FROM PUBLIC;
 GRANT  CONNECT ON DATABASE ledger, ledger_test TO ledger_owner, ledger_app, ledger_worker, ledger_reconciler, ledger_agent;
+
+-- pgvector (step 7b): the assistant's policy documents are stored as vectors.
+-- CREATE EXTENSION vector needs a superuser, which migrations (ledger_owner)
+-- deliberately are not, so it is created here, in each database. Migration
+-- 009 only checks that it exists.
+\connect ledger
+CREATE EXTENSION IF NOT EXISTS vector;
+\connect ledger_test
+CREATE EXTENSION IF NOT EXISTS vector;

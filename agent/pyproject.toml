@@ -9,6 +9,12 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "psycopg-pool>=3.2",
     "pydantic>=2.9",
+    # Step 7b: the assistant. Exact versions checked on PyPI, 2026-11-16.
+    "langchain==1.5.0",
+    "langchain-core==1.8.1",
+    "langgraph==1.2.22",
+    "langchain-google-genai==4.5.0",
+    "langsmith==0.14.17",
 ]
 
 [dependency-groups]
@@ -35,7 +41,7 @@ ignore = ["ANN401"]
 python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
-files = ["ledger_agent", "tests"]
+files = ["ledger_agent", "tests", "scripts"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
