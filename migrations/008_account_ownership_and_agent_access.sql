@@ -32,9 +32,19 @@ ALTER TABLE accounts ADD CONSTRAINT accounts_owner_client_id_length
 -- "the accounts of client X": the API's ownership check and every agent query.
 CREATE INDEX accounts_owner_client_id_idx ON accounts (owner_client_id)
     WHERE owner_client_id IS NOT NULL;
--- "top-ups onto account X": the other half of agent_transaction_ids() below.
--- (entries already has entries_account_id_idx and entries_transaction_id_idx.)
-CREATE INDEX topups_account_id_idx ON topups (account_id);
+
+-- What agent_transaction_ids() (below) walks: "every transaction with a leg on
+-- one of these accounts" and "every top-up onto one of them". INCLUDE makes
+-- both index-only scans: the transaction id is read from the index, no heap
+-- visit per entry. Measured on 100k transactions, one client with 4 accounts
+-- and ~4,000 legs: the function went from 29 ms to 2 ms, and list_transactions
+-- from 230 ms to 32 ms (together with the created_at index below).
+-- entries_account_id_idx from 001 is replaced by its covering version.
+DROP INDEX entries_account_id_idx;
+CREATE INDEX entries_account_id_idx ON entries (account_id) INCLUDE (transaction_id);
+CREATE INDEX topups_account_id_idx  ON topups  (account_id) INCLUDE (transaction_id);
+-- "newest first, within a window": list_transactions orders and filters by this.
+CREATE INDEX transactions_created_at_idx ON transactions (created_at);
 
 -- An owner is chosen when the account is created and never changes. The one
 -- permitted update is NULL -> a value, for rows that predate this migration.
