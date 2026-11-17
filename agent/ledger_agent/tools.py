@@ -3,7 +3,8 @@
 Every tool takes the ClientContext FIRST and reads through the agent_* views
 inside `client_scope`, so Postgres only ever returns that client's rows.
 Money is integer paise end to end: Postgres BIGINT -> Python int -> the
-models' `int` fields. No float is ever involved.
+models' `int` fields. No float is ever involved. Arithmetic (period totals,
+opening and closing balances) is done here, in SQL, never by a model.
 
 "Not found" covers both "does not exist" and "not yours": the views simply do
 not contain other clients' rows, so the tools cannot tell the difference, and
@@ -27,6 +28,15 @@ MAX_LIMIT = 200
 
 class NotFoundError(Exception):
     """The account or transaction does not exist for this client."""
+
+
+class AccountInfo(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    account_id: UUID
+    name: str
+    currency: str
+    balance_paise: int
 
 
 class Balance(BaseModel):
@@ -77,6 +87,22 @@ class TransactionSummary(BaseModel):
     counterparty_account_id: UUID | None
 
 
+class TransactionsReport(BaseModel):
+    """Movements on one account in [from, to), plus the arithmetic a model must never do itself."""
+
+    model_config = ConfigDict(frozen=True)
+
+    account_id: UUID
+    period_from: datetime
+    period_to: datetime
+    opening_balance_paise: int
+    closing_balance_paise: int
+    total_in_paise: int
+    total_out_paise: int
+    net_change_paise: int
+    transactions: list[TransactionSummary]
+
+
 class TransactionDetail(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -91,10 +117,18 @@ class TransactionDetail(BaseModel):
 
 
 class LedgerTools:
-    """The three read-only tools, bound to a connection pool (role ledger_agent)."""
+    """The read-only tools, bound to a connection pool (role ledger_agent)."""
 
     def __init__(self, pool: ConnectionPool[psycopg.Connection[DictRow]]) -> None:
         self._pool = pool
+
+    def list_accounts(self, ctx: ClientContext) -> list[AccountInfo]:
+        with client_scope(self._pool, ctx) as conn:
+            rows = conn.execute("SELECT id, name, currency, balance_paise FROM agent_accounts ORDER BY name").fetchall()
+        return [
+            AccountInfo(account_id=r["id"], name=r["name"], currency=r["currency"], balance_paise=r["balance_paise"])
+            for r in rows
+        ]
 
     def get_balance(self, ctx: ClientContext, account_id: UUID) -> Balance:
         with client_scope(self._pool, ctx) as conn:
@@ -119,13 +153,14 @@ class LedgerTools:
         from_: datetime | None = None,
         to: datetime | None = None,
         limit: int = DEFAULT_LIMIT,
-    ) -> list[TransactionSummary]:
-        """Movements on one account, newest first, within [from_, to)."""
+    ) -> TransactionsReport:
+        """Movements on one account, newest first, within [from_, to), with period totals."""
         limit = max(1, min(limit, MAX_LIMIT))
         from_ = from_ or datetime(1970, 1, 1, tzinfo=UTC)
         to = to or datetime(9999, 12, 31, tzinfo=UTC)
         with client_scope(self._pool, ctx) as conn:
-            if conn.execute("SELECT 1 FROM agent_accounts WHERE id = %s", (account_id,)).fetchone() is None:
+            account = conn.execute("SELECT balance_paise FROM agent_accounts WHERE id = %s", (account_id,)).fetchone()
+            if account is None:
                 raise NotFoundError(f"account {account_id} not found")
             # Posted movements: the client's own leg on this account, plus the other side.
             moved = conn.execute(
@@ -156,6 +191,27 @@ class LedgerTools:
                 """,
                 (account_id, from_, to, limit),
             ).fetchall()
+            # The arithmetic, in SQL: what came in and went out during the period,
+            # and what moved after it (to walk the current balance back to the
+            # period's end). Pending top-ups have no entries and count for nothing.
+            totals = conn.execute(
+                """
+                SELECT COALESCE(SUM(e.amount_paise) FILTER (WHERE e.direction = 'credit'
+                           AND t.created_at >= %(f)s AND t.created_at < %(t)s), 0) AS total_in,
+                       COALESCE(SUM(e.amount_paise) FILTER (WHERE e.direction = 'debit'
+                           AND t.created_at >= %(f)s AND t.created_at < %(t)s), 0) AS total_out,
+                       COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount_paise ELSE -e.amount_paise END)
+                           FILTER (WHERE t.created_at >= %(t)s), 0) AS net_after
+                  FROM agent_entries e
+                  JOIN agent_transactions t ON t.id = e.transaction_id
+                 WHERE e.account_id = %(a)s AND e.own_account
+                """,
+                {"a": account_id, "f": from_, "t": to},
+            ).fetchone()
+        assert totals is not None
+        total_in, total_out, net_after = int(totals["total_in"]), int(totals["total_out"]), int(totals["net_after"])
+        closing = int(account["balance_paise"]) - net_after
+        opening = closing - (total_in - total_out)
         rows = [
             TransactionSummary(
                 transaction_id=r["id"],
@@ -185,7 +241,17 @@ class LedgerTools:
             for r in waiting
         ]
         rows.sort(key=lambda s: s.created_at, reverse=True)
-        return rows[:limit]
+        return TransactionsReport(
+            account_id=account_id,
+            period_from=from_,
+            period_to=to,
+            opening_balance_paise=opening,
+            closing_balance_paise=closing,
+            total_in_paise=total_in,
+            total_out_paise=total_out,
+            net_change_paise=total_in - total_out,
+            transactions=rows[:limit],
+        )
 
     def explain_transaction(self, ctx: ClientContext, transaction_id: UUID) -> TransactionDetail:
         with client_scope(self._pool, ctx) as conn:
