@@ -195,6 +195,28 @@ Accounts now belong to a client: `POST /transfers` and `POST /topups` answer 404
 account the caller does not own, exactly like a missing one. See
 [docs/STEP-07A-EXPLAINED.md](docs/STEP-07A-EXPLAINED.md).
 
+**Step 7b: `POST /ask`.** Questions about your own money and about the (fictional) policies,
+answered by Gemini through LangChain/LangGraph, every figure verified by code against the
+data the tools fetched. Needs a Gemini key in `agent/.env` (`cp agent/.env.example agent/.env`;
+never committed) and the policies embedded once:
+
+```bash
+npm run db:roles                                      # also creates pgvector (superuser), safe to re-run
+npm run migrate
+cd agent
+uv run python scripts/ingest_policies.py              # idempotent; --dry-run to preview
+uv run uvicorn ledger_agent.api:app --port 8000
+curl -s localhost:8000/ask -H 'X-Client-Id: <client>' -H 'content-type: application/json' \
+  -d '{"question": "Why is my balance lower than last week?"}'
+uv run python scripts/smoke_real_model.py             # 3 questions against the real model
+```
+
+At most 20 questions per client per 24 hours (429). Compose: `GOOGLE_API_KEY` in the repo's
+`.env`, then `docker compose -f docker-compose.full.yml run --rm agent-ingest`. A compose
+volume created before step 7b lacks pgvector: run the roles file once against it
+(`docker compose -f docker-compose.full.yml exec -T postgres psql -U postgres -d postgres -f - < k8s/base/postgres/init/00-roles.sql`).
+See [docs/STEP-07B-EXPLAINED.md](docs/STEP-07B-EXPLAINED.md).
+
 ## Run it on Kubernetes (locally, with kind)
 
 The same images on a one-node Kubernetes cluster inside Docker. Needs `kubectl`, `kind`
