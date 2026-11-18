@@ -130,6 +130,13 @@
   }
 }
 
+/* Ids and keys stay in the UI face (no monospace), with tabular digits, and wrap anywhere. */
+code {
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
 /* Every amount: tabular figures, so columns of rupees line up digit under digit. */
 .money {
   font-variant-numeric: tabular-nums lining-nums;

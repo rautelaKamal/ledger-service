@@ -31,7 +31,8 @@ const columns = [
           <span className={cn(r.status === 'failed' && 'text-ink-soft')}>{particulars(r)}</span>
           <span className="text-sm text-ink-soft">
             {timeLabel(r.createdAt)}
-            {r.note ? `, ${r.note}` : ''}
+            {/* Notes are what the sender wrote; a top-up's note is the API's own bookkeeping text. */}
+            {r.kind === 'transfer' && r.note ? `, ${r.note}` : ''}
           </span>
         </div>
       );

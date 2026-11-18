@@ -212,8 +212,10 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
           ) : (
             <div className="flex flex-col gap-3">
               {replayed && replay.fromBalanceAfter === first.fromBalanceAfter ? (
-                <div className="flex flex-wrap items-center gap-4">
-                  <Stamp land>Replayed, no new money moved</Stamp>
+                <div className="flex flex-col items-start gap-4 py-2">
+                  <Stamp land className="my-4">
+                    Replayed, no new money moved
+                  </Stamp>
                   <p className="text-ink-soft">
                     {status(replay)} with <code>Idempotent-Replayed: true</code>, the same body, and {accountName} still at{' '}
                     {replay.fromBalanceAfter ? <Money paise={replay.fromBalanceAfter} /> : null}.
@@ -224,10 +226,10 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
                   The second request was answered {status(replay)} without the replay header. Look at both responses below.
                 </p>
               )}
-              <WirePanel exchange={replay.exchange} />
+              <WirePanel exchange={replay.exchange} title="The second request and its response, as the server sent them" />
             </div>
           )}
-          <WirePanel exchange={first.exchange} />
+          <WirePanel exchange={first.exchange} title="The first request and its response, as the server sent them" />
           <div>
             <Button variant="ghost" onClick={startOver}>
               Start a new transfer

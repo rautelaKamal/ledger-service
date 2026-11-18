@@ -7,21 +7,16 @@ export function PersonaSwitcher({ current }: { current: Persona }) {
       <label htmlFor="persona" className="text-sm text-ink-soft">
         You are
       </label>
-      <div className="flex gap-2">
-        <select
-          id="persona"
-          name="persona"
-          defaultValue={current.key}
-          className="min-w-0 flex-1 rounded-md border border-input bg-surface px-2 py-1.5"
-        >
+      <div className="flex flex-col gap-2">
+        <select id="persona" name="persona" defaultValue={current.key} className="w-full rounded-md border border-input bg-surface px-2 py-1.5">
           {PERSONAS.map((p) => (
             <option key={p.key} value={p.key}>
               {p.name}
             </option>
           ))}
         </select>
-        <button type="submit" className="rounded-md border border-input px-2.5 text-sm hover:border-ink">
-          Switch
+        <button type="submit" className="self-start rounded-md border border-input px-2.5 py-1 text-sm hover:border-ink">
+          Switch person
         </button>
       </div>
     </form>

@@ -58,7 +58,7 @@ async function scripted(persona: Persona, question: string): Promise<AssistantAn
     citations.push({ ...c, n });
     return `[${n}]`;
   };
-  const citePolicy = (p: PolicyExcerpt) => cite({ kind: 'policy', title: `${p.source.replace(/\.md$/, '').replace(/-/g, ' ')}: ${p.heading}`, lines: [p.text] });
+  const citePolicy = (p: PolicyExcerpt) => cite({ kind: 'policy', title: `${p.title}: ${p.heading}`, lines: [p.text] });
 
   const loadAccounts = async (): Promise<Account[]> => {
     const accounts = await getAccounts(clientId);
@@ -73,27 +73,40 @@ async function scripted(persona: Persona, question: string): Promise<AssistantAn
   };
   const finish = (answer: string): AssistantAnswer => {
     const verified = verifyAmounts(answer, facts);
-    steps.push(`Checked ${(answer.match(AMOUNT) ?? []).length} amounts in the answer against the fetched data: ${verified ? 'all found' : 'not all found'}.`);
+    const n = (answer.match(AMOUNT) ?? []).length;
+    steps.push(`Checked ${n === 1 ? 'the 1 amount' : `${n} amounts`} in the answer against the fetched data: ${verified ? (n === 1 ? 'found' : 'all found') : 'not all found'}.`);
     return { mode: 'scripted', answer, verified, citations, steps };
   };
 
   if (/twice|duplicate|same (transfer|request|payment)|again/.test(q)) {
     steps.push('Matched the policy on duplicate payments.');
-    return finish(`You cannot pay twice by sending the same request again: the ledger returns the original result instead of moving money a second time ${citePolicy(POLICIES.duplicates)}. The Send page lets you try it.`);
+    return finish(`You cannot pay twice by sending the same request again: the ledger returns the original result instead of moving money a second time${citePolicy(POLICIES.duplicates)}. The Send page lets you try it.`);
   }
 
   if (/top.?up|arrive|go through|went through/.test(q)) {
     const accounts = await loadAccounts();
     const rows = (await loadRows(accounts)).filter((r) => r.kind === 'topup' && Date.now() - new Date(r.createdAt).getTime() < 14 * 86_400_000);
     if (rows.length === 0) return finish('You have no top-ups in the last 14 days.');
-    const parts = rows.map((r) => {
-      const ref = cite({ kind: 'transaction', title: `Top-up to ${r.account}`, lines: [`${dayLabel(r.createdAt)}, ${r.status}`, `id ${r.id}`] });
+    // Complete in counts, readable in detail: every top-up is counted by status;
+    // the newest few are listed with their sources.
+    const SHOWN = 5;
+    const count = (s: PassbookRow['status']) => rows.filter((r) => r.status === s).length;
+    const tally = [
+      count('posted') && `${count('posted')} went through`,
+      count('pending') && `${count('pending')} ${count('pending') === 1 ? 'is' : 'are'} still waiting for the bank`,
+      count('failed') && `${count('failed')} failed`,
+    ].filter(Boolean);
+    const parts = rows.slice(0, SHOWN).map((r) => {
+      const ref = cite({ kind: 'transaction', title: `Top-up to ${r.account}`, lines: [`${dayLabel(r.createdAt)}, ${r.status}`, `id ${r.id.slice(0, 8)}…`] });
       const word = r.status === 'posted' ? 'went through' : r.status === 'pending' ? 'is still waiting for the bank' : 'failed';
-      return `${fact(r.amountPaise)} to ${r.account} on ${dayLabel(r.createdAt)} ${word} ${ref}`;
+      return `${fact(r.amountPaise)} to ${r.account} on ${dayLabel(r.createdAt)} ${word}${ref}`;
     });
-    let answer = `In the last 14 days you have ${rows.length} top-up${rows.length === 1 ? '' : 's'}: ${parts.join('; ')}.`;
-    if (rows.some((r) => r.status === 'failed')) answer += ` A failed top-up never credited your account; if money left your bank for it, UPI and bank refunds take 1 to 3 business days ${citePolicy(POLICIES.refunds)}.`;
-    if (rows.some((r) => r.status === 'pending')) answer += ` A pending top-up is not part of your balance until the bank confirms it ${citePolicy(POLICIES.pendingTopups)}.`;
+    let answer =
+      rows.length === 1
+        ? `In the last 14 days you have one top-up: ${parts[0]}.`
+        : `In the last 14 days you have ${rows.length} top-ups: ${tally.join(', ')}. ${rows.length > SHOWN ? `The newest ${SHOWN}` : 'They are'}: ${parts.join('; ')}.`;
+    if (rows.some((r) => r.status === 'failed')) answer += ` A failed top-up never credited your account; if money left your bank for it, UPI and bank refunds take 1 to 3 business days${citePolicy(POLICIES.refunds)}.`;
+    if (rows.some((r) => r.status === 'pending')) answer += ` A pending top-up is not part of your balance until the bank confirms it${citePolicy(POLICIES.pendingTopups)}.`;
     return finish(answer);
   }
 
@@ -105,8 +118,8 @@ async function scripted(persona: Persona, question: string): Promise<AssistantAn
     steps.push(`Added up ${out.length} outgoing entries in code.`);
     const biggest = [...out].sort((a, b) => (BigInt(a.amountPaise) < BigInt(b.amountPaise) ? -1 : 1)).slice(0, 3);
     const list = biggest.map((r) => {
-      const ref = cite({ kind: 'transaction', title: r.counterparty ? `To ${r.counterparty.name}` : 'Transfer', lines: [`${dayLabel(r.createdAt)}, from ${r.account}`, `id ${r.id}`] });
-      return `${fact(-BigInt(r.amountPaise))} to ${r.counterparty?.name ?? 'an account'} ${ref}`;
+      const ref = cite({ kind: 'transaction', title: r.counterparty ? `To ${r.counterparty.name}` : 'Transfer', lines: [`${dayLabel(r.createdAt)}, from ${r.account}`, `id ${r.id.slice(0, 8)}…`] });
+      return `${fact(-BigInt(r.amountPaise))} to ${r.counterparty?.name ?? 'an account'}${ref}`;
     });
     return finish(`In the last 7 days you sent ${fact(total)} in ${out.length} transfer${out.length === 1 ? '' : 's'}. The largest: ${list.join(', ')}.`);
   }
@@ -115,10 +128,10 @@ async function scripted(persona: Persona, question: string): Promise<AssistantAn
     const accounts = await loadAccounts();
     const total = sumPaise(accounts.map((a) => a.balancePaise));
     steps.push('Added the balances in code.');
-    const parts = accounts.map((a) => `${short(a.name)} ${fact(a.balancePaise)} ${cite({ kind: 'account', title: short(a.name), lines: [`balance ${formatPaise(a.balancePaise)}`] })}`);
+    const parts = accounts.map((a) => `${short(a.name)} ${fact(a.balancePaise)}${cite({ kind: 'account', title: short(a.name), lines: [`balance ${formatPaise(a.balancePaise)}`] })}`);
     const pending = sumPaise(accounts.map((a) => a.pendingTopupsPaise));
     let answer = accounts.length === 1 ? `You have ${fact(total)} in ${parts[0]}.` : `You have ${fact(total)} in total: ${parts.join(' and ')}.`;
-    if (pending > 0n) answer += ` Another ${fact(pending)} in top-ups is waiting for the bank and is not in that total ${citePolicy(POLICIES.pendingTopups)}.`;
+    if (pending > 0n) answer += ` Another ${fact(pending)} in top-ups is waiting for the bank and is not in that total${citePolicy(POLICIES.pendingTopups)}.`;
     return finish(answer);
   }
 

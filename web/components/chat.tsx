@@ -18,7 +18,7 @@ function AnswerText({ text, prefix }: { text: string; prefix: string }) {
       {parts.map((part, i) => {
         const m = /^\[(\d+)\]$/.exec(part);
         return m ? (
-          <a key={i} href={`#${prefix}-${m[1]}`} className="mx-0.5 rounded-sm px-1 align-baseline text-base font-medium text-stamp underline underline-offset-2" aria-label={`source ${m[1]}`}>
+          <a key={i} href={`#${prefix}-${m[1]}`} className="ml-0.5 rounded-sm px-0.5 align-baseline text-base font-medium text-stamp underline underline-offset-2" aria-label={`source ${m[1]}`}>
             [{m[1]}]
           </a>
         ) : (

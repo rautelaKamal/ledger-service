@@ -1,11 +1,11 @@
 import type { WireExchange } from '@/lib/types';
 
 /** The request and response as the web server exchanged them with the ledger API. */
-export function WirePanel({ exchange }: { exchange: WireExchange }) {
+export function WirePanel({ exchange, title }: { exchange: WireExchange; title: string }) {
   const { request, response } = exchange;
   return (
     <details className="border-t border-rule pt-3">
-      <summary className="cursor-pointer text-ink-soft hover:text-ink">The request and the response, as the server sent them</summary>
+      <summary className="cursor-pointer text-ink-soft hover:text-ink">{title}</summary>
       <div className="mt-3 grid gap-4 text-sm sm:grid-cols-2">
         <div>
           <p className="font-medium">

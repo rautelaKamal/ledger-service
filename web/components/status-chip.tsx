@@ -9,7 +9,7 @@ export function StatusChip({ status }: { status: PassbookRow['status'] }) {
     <span
       className={cn(
         'inline-flex items-center rounded-sm border px-1.5 text-sm leading-6',
-        status === 'posted' && 'border-rule text-ink-soft',
+        status === 'posted' && 'border-transparent px-0 text-ink-soft',
         status === 'pending' && 'hatch border-pending text-pending',
         status === 'failed' && 'border-failed text-failed',
       )}

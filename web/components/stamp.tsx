@@ -9,7 +9,8 @@ export function Stamp({ children, land = false, className }: { children: React.R
   return (
     <span
       className={cn(
-        'inline-block -rotate-6 rounded-sm border-2 border-double border-stamp px-2.5 py-0.5 font-figures text-lg leading-tight font-semibold tracking-wide text-stamp',
+        // The −6° tilt lowers one end by about a tenth of the stamp's half-width: the vertical margin keeps it off its neighbours.
+        'my-2 inline-block -rotate-6 rounded-sm border-2 border-double border-stamp px-2.5 py-0.5 font-figures text-lg leading-tight font-semibold tracking-wide text-stamp',
         land && 'stamp-land',
         className,
       )}
