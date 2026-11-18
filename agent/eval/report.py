@@ -73,11 +73,14 @@ def summarize(label: str) -> dict[str, Any]:
         "tokens_in": sum(r.get("tokens_in", 0) for r in ok),
         "tokens_out": sum(r.get("tokens_out", 0) for r in ok),
         "calls_per_q": [r["chat_calls"] + r["embed_calls"] for r in ok],
+        # Records without wait_s were made before throttle waits were measured:
+        # their latency includes that wait, so they are left out of latency stats.
+        "latency_n": len(timed := [r for r in ok if "wait_s" in r]),
         "latency": {
-            k: (pct([r[k] for r in ok], 50), pct([r[k] for r in ok], 95))
+            k: (pct([r[k] for r in timed], 50), pct([r[k] for r in timed], 95))
             for k in ("latency_s", "model_s", "embed_s", "tool_s", "own_s")
         }
-        if ok
+        if timed
         else {},
         "lat_all": lat,
     }
@@ -113,7 +116,7 @@ def print_one(s: dict[str, Any]) -> None:
     )
     if s["latency"]:
         parts = "  ".join(f"{k[:-2]} {v[0]:.1f}/{v[1]:.1f}s" for k, v in s["latency"].items())
-        print(f"latency p50/p95: {parts}")
+        print(f"latency p50/p95 over {s['latency_n']} cleanly timed answers: {parts}")
 
 
 def print_compare(a: dict[str, Any], b: dict[str, Any]) -> None:

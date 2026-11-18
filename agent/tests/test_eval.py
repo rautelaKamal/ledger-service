@@ -229,3 +229,21 @@ def test_expect_is_frozen() -> None:
     e = Expect(amounts=frozenset({1}))
     with pytest.raises(AttributeError):
         e.amounts = frozenset()  # type: ignore[misc]
+
+
+def test_throttle_wait_is_measured_so_the_runner_can_keep_it_out_of_latency() -> None:
+    from eval.instrument import MeteredEmbeddings
+
+    now = [0.0]
+
+    def sleep(s: float) -> None:
+        now[0] += s
+
+    meter = Meter()
+    emb = MeteredEmbeddings(FakeEmbeddings(), meter, Throttle(rpm=1, clock=lambda: now[0], sleep=sleep))
+    emb.embed_query("one")
+    assert meter.wait_s == 0.0
+    emb.embed_query("two")  # second call in the same minute: the throttle holds it ~60 s
+    assert 59 < meter.wait_s < 61 and meter.embed_calls == 2
+    meter.reset()
+    assert meter.wait_s == 0.0

@@ -28,10 +28,12 @@ class Throttle:
         self._sleep = sleep
         self.waited_s = 0.0
 
-    def acquire(self) -> None:
+    def acquire(self) -> float:
+        """Returns the seconds it waited (0.0 if none), so callers can keep it out of latency."""
         now = self._clock()
         while self._times and now - self._times[0] >= 60:
             self._times.popleft()
+        wait = 0.0
         if len(self._times) >= self.rpm:
             wait = 60 - (now - self._times[0]) + 0.05
             self.waited_s += wait
@@ -40,6 +42,7 @@ class Throttle:
             while self._times and now - self._times[0] >= 60:
                 self._times.popleft()
         self._times.append(now)
+        return wait
 
 
 @dataclass
@@ -51,11 +54,12 @@ class Meter:
     model_s: float = 0.0
     embed_s: float = 0.0
     tool_s: float = 0.0
+    wait_s: float = 0.0  # time spent in OUR throttle: not latency, subtracted by the runner
     _starts: dict[UUID, float] = field(default_factory=dict)
 
     def reset(self) -> None:
         self.chat_calls = self.embed_calls = 0
-        self.model_s = self.embed_s = self.tool_s = 0.0
+        self.model_s = self.embed_s = self.tool_s = self.wait_s = 0.0
         self._starts.clear()
 
 
@@ -69,7 +73,7 @@ class ChatMeter(BaseCallbackHandler):
     def on_chat_model_start(
         self, serialized: dict[str, Any], messages: list[list[Any]], *, run_id: UUID, **kwargs: Any
     ) -> None:
-        self.throttle.acquire()
+        self.meter.wait_s += self.throttle.acquire()
         self.meter.chat_calls += 1
         self.meter._starts[run_id] = time.perf_counter()
 
@@ -93,7 +97,7 @@ class MeteredEmbeddings(Embeddings):
         return self.inner.embed_documents(texts)
 
     def embed_query(self, text: str) -> list[float]:
-        self.throttle.acquire()
+        self.meter.wait_s += self.throttle.acquire()
         self.meter.embed_calls += 1
         started = time.perf_counter()
         try:

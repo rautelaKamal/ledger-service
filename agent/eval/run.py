@@ -220,7 +220,8 @@ def run_one(
             print(f"  {item.id:4s} #{rep}  upstream failure (attempt {attempt}): waiting {delay:.0f}s")
             time.sleep(delay)
             continue
-        latency = time.perf_counter() - started
+        # End to end, minus the time our own throttle held the question back.
+        latency = time.perf_counter() - started - meter.wait_s
         break
     run = owner.execute(
         "SELECT prompt_tokens, completion_tokens, retrieved_chunk_ids, attempts, verify_failures"
@@ -249,6 +250,7 @@ def run_one(
         "tokens_in": run["prompt_tokens"],
         "tokens_out": run["completion_tokens"],
         "latency_s": latency,
+        "wait_s": meter.wait_s,
         "model_s": model_s,
         "embed_s": embed_s,
         "tool_s": tool_s,
