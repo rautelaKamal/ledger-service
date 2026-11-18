@@ -241,6 +241,8 @@ export function readsRouter(pool: Pool): Router {
       logger.info({ client_id: clientId, topup_id: id, reason: topup ? 'not_owner' : 'missing' }, 'read refused: 404');
       return notFound();
     }
+    // Ownership is settled above; only then ask when the payment command went out (migration 012).
+    const sent = await pool.query<{ at: string | null }>('SELECT topup_payment_sent_at($1) AS at', [id]);
     const events = await pool.query<{ provider_event_id: string; event_type: string; result: string; received_at: string }>(
       `SELECT provider_event_id, event_type, result, received_at
          FROM webhook_events WHERE topup_transaction_id = $1
@@ -255,9 +257,10 @@ export function readsRouter(pool: Pool): Router {
       status: topup.status,
       createdAt: topup.created_at,
       postedAt: topup.posted_at,
-      // Set by the worker once the provider accepted the payment request. The time
-      // it was set is not recorded (the API cannot read the outbox, by design).
+      // Set by the worker once the provider accepted the payment request.
       providerPaymentId: topup.provider_payment_id,
+      // When the worker delivered the payment command to the provider (outbox sent_at).
+      paymentSentAt: sent.rows[0]?.at ?? null,
       webhooks: events.rows.map((e) => ({ eventId: e.provider_event_id, type: e.event_type, result: e.result, receivedAt: e.received_at })),
     });
   });

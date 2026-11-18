@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { createPool, type Pool } from '../src/db.js';
 import { encodeCursor } from '../src/http/reads.js';
-import { TEST_CLIENT, createAccount, fundAccount } from './helpers.js';
+import { PG, TEST_CLIENT, createAccount, fundAccount } from './helpers.js';
 import { postTransfer, startTestServer, type TestServer } from './http.js';
 import { resetLedger } from './reset.js';
 
@@ -171,6 +171,12 @@ describe('GET /accounts/:id/balance-history', () => {
 });
 
 describe('GET /topups/:id', () => {
+  test('10. the API learns when a payment was sent, and still cannot read the outbox itself', async () => {
+    await expect(app.query('SELECT sent_at FROM outbox LIMIT 1')).rejects.toMatchObject({ code: PG.INSUFFICIENT_PRIVILEGE });
+    const { rows } = await app.query<{ at: string | null }>('SELECT topup_payment_sent_at($1) AS at', [randomUUID()]);
+    expect(rows[0]!.at).toBeNull();
+  });
+
   test('9. the owner sees the timeline; anyone else gets the same 404 as a missing top-up', async () => {
     const acct = await createAccount(app, 'user', 'INR', 'topped up');
     const topupId = await requestTopup(acct, 5_000);
@@ -188,8 +194,18 @@ describe('GET /topups/:id', () => {
       amountPaise: '5000',
       status: 'pending',
       providerPaymentId: null, // no worker in this test: the payment was never requested
+      paymentSentAt: null,
       webhooks: [{ eventId: 'evt_reads_1', type: 'payment.succeeded', result: 'posted' }],
     });
+
+    // The worker delivers the payment command: its sent_at becomes the timeline's time.
+    await owner.query(
+      `UPDATE outbox SET status = 'sent', sent_at = now(), attempts = 1
+        WHERE type = 'provider.create_payment' AND payload->>'topupId' = $1`,
+      [topupId],
+    );
+    const sentAt = (await get(`/topups/${topupId}`)).json.paymentSentAt;
+    expect(new Date(sentAt).getTime()).toBeGreaterThan(Date.now() - 60_000);
 
     const ghost = randomUUID();
     expect(await get(`/topups/${topupId}`, OTHER)).toEqual({ status: 404, json: { error: { code: 'topup_not_found', message: `top-up ${topupId} does not exist` } } });
