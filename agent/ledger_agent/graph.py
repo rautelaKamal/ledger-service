@@ -86,8 +86,12 @@ class TransactionArgs(BaseModel):
 class Usage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    chat_calls: int = 0
+    embed_calls: int = 0
 
     def add(self, message: Any) -> None:
+        """One chat-model response: one call, and its tokens."""
+        self.chat_calls += 1
         meta = getattr(message, "usage_metadata", None) or {}
         self.prompt_tokens += int(meta.get("input_tokens", 0) or 0)
         self.completion_tokens += int(meta.get("output_tokens", 0) or 0)
@@ -282,6 +286,7 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
     # where retrieval time goes: the embedding API call vs the vector search.
     @traceable(run_type="embedding", name="embed_question")
     def embed_question(question: str) -> list[float]:
+        run.usage.embed_calls += 1
         return cast(list[float], _invoke_model(lambda: deps.embeddings.embed_query(query_text(question))))
 
     @traceable(run_type="retriever", name="policy_search")

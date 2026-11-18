@@ -1,6 +1,7 @@
 """HTTP: the probes, and POST /ask."""
 
 import logging
+import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -19,7 +20,8 @@ from .config import REQUIRED_MIGRATIONS, Settings, apply_tracing_env, load_setti
 from .dates import now_utc
 from .db import ClientContext, create_pool
 from .llm import UpstreamModelError, build_chat_model, build_embeddings
-from .prompts import MODEL_BUSY_TEXT
+from .metrics import AgentMetrics
+from .prompts import FALLBACK_TEXT, MODEL_BUSY_TEXT, REFUSAL_TEXT
 from .runs import RateLimitedError
 from .service import Assistant
 from .verify import Citation
@@ -61,6 +63,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             log.warning("GOOGLE_API_KEY is not set: /ask will answer 503 until it is")
     app.state.assistant = Assistant(pool, settings, chat, embeddings, now_fn) if chat and embeddings else None
     log.info("tracing: %s", "on (LangSmith)" if _tracing_enabled() else "off")
+    if settings.metrics_port and not getattr(app.state, "metrics_serving", False):
+        app.state.metrics.serve(settings.metrics_port)  # internal port only; never on 8000
+        app.state.metrics_serving = True
+        log.info("metrics on :%d", settings.metrics_port)
     try:
         yield
     finally:
@@ -80,6 +86,7 @@ def create_app(
     now_fn: Callable[[], datetime] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="ledger-agent", lifespan=lifespan)
+    app.state.metrics = AgentMetrics()
     if settings is not None:
         app.state.settings = settings
     if chat is not None:
@@ -115,19 +122,24 @@ def create_app(
 
     @app.post("/ask", response_model=AskResponse)
     def ask(request: Request, body: AskRequest, x_client_id: str | None = Header(default=None)) -> JSONResponse:
+        metrics: AgentMetrics = request.app.state.metrics
         # The client id comes from the header and nowhere else (the auth stand-in).
         try:
             ctx = ClientContext.from_header(x_client_id)
         except ValueError as e:
+            metrics.not_answered("bad_request")
             return JSONResponse(status_code=400, content={"error": {"code": "missing_client_id", "message": str(e)}})
         assistant: Assistant | None = request.app.state.assistant
         if assistant is None:
+            metrics.not_answered("upstream_failed")
             return JSONResponse(
                 status_code=503, content={"error": {"code": "model_not_configured", "message": MODEL_BUSY_TEXT}}
             )
+        started = time.perf_counter()
         try:
             result = assistant.ask(ctx, body.question)
         except RateLimitedError as e:
+            metrics.not_answered("rate_limited")
             return JSONResponse(
                 status_code=429,
                 headers={"Retry-After": "3600"},
@@ -136,11 +148,13 @@ def create_app(
         except UpstreamModelError as e:
             # Logged, not recorded: an upstream failure is not a question the client asked.
             log.warning("upstream model failure for client %s: %s", ctx.client_id, e)
+            metrics.not_answered("upstream_failed")
             return JSONResponse(
                 status_code=503,
                 headers={"Retry-After": "30"},
                 content={"error": {"code": "model_unavailable", "message": MODEL_BUSY_TEXT}},
             )
+        metrics.answered(result, REFUSAL_TEXT, FALLBACK_TEXT, time.perf_counter() - started)
         return JSONResponse(
             status_code=200,
             content=AskResponse(

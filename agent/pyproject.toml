@@ -15,6 +15,8 @@ dependencies = [
     "langgraph==1.2.22",
     "langchain-google-genai==4.5.0",
     "langsmith==0.14.17",
+    # Step 7c: /metrics on an internal port. Checked on PyPI 2026-11-18; no dependencies.
+    "prometheus-client==0.26.0",
 ]
 
 [dependency-groups]

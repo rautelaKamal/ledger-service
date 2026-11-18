@@ -27,6 +27,13 @@ class AskResult:
     answer: str
     citations: list[Citation]
     verified: bool
+    # For metrics (step 7c); not part of the HTTP response.
+    category: str = ""
+    chat_calls: int = 0
+    embed_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    tools: tuple[tuple[str, bool], ...] = ()
 
 
 class Assistant:
@@ -90,4 +97,15 @@ class Assistant:
         )
         with client_scope(self._pool, ctx, read_only=False) as conn:
             run_id = insert_run(conn, ctx.client_id, record)
-        return AskResult(run_id=run_id, answer=outcome.answer, citations=outcome.citations, verified=outcome.verified)
+        return AskResult(
+            run_id=run_id,
+            answer=outcome.answer,
+            citations=outcome.citations,
+            verified=outcome.verified,
+            category=outcome.category,
+            chat_calls=outcome.usage.chat_calls,
+            embed_calls=outcome.usage.embed_calls,
+            prompt_tokens=outcome.usage.prompt_tokens,
+            completion_tokens=outcome.usage.completion_tokens,
+            tools=tuple((c.name, c.ok) for c in outcome.tools_called),
+        )
