@@ -2,6 +2,7 @@ import express from 'express';
 import { requestIdFrom, runWithRequestId } from './context.js';
 import type { Pool } from './db.js';
 import { errorBody } from './http/errors.js';
+import { readsRouter } from './http/reads.js';
 import { topupsRouter } from './http/topups.js';
 import { transfersRouter } from './http/transfers.js';
 import { webhooksRouter } from './http/webhooks.js';
@@ -109,6 +110,7 @@ export function createApp(pool: Pool, options: AppOptions): express.Express {
   const idempotency = { ...(options.keyClaimTimeoutMs !== undefined ? { keyClaimTimeoutMs: options.keyClaimTimeoutMs } : {}) };
   app.use(transfersRouter(pool, metrics, idempotency));
   app.use(topupsRouter(pool, metrics, idempotency));
+  app.use(readsRouter(pool));
 
   // Last resort. Express 5 routes rejected promises here automatically.
   const errorHandler: express.ErrorRequestHandler = (err, _req, res, _next) => {
