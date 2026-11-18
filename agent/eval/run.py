@@ -30,6 +30,7 @@ from psycopg.rows import dict_row
 
 from ledger_agent.config import apply_tracing_env, load_settings
 from ledger_agent.db import ClientContext, create_pool
+from ledger_agent.graph import FEATURES
 from ledger_agent.llm import UpstreamModelError, build_chat_model, build_embeddings
 from ledger_agent.service import Assistant
 from ledger_agent.tools import LedgerTools
@@ -100,6 +101,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--max-calls", type=int, default=400, help="stop before exceeding this many API calls in this invocation"
     )
+    p.add_argument(
+        "--features", default="", help="comma-separated improvements to switch on (ledger_agent.graph.FEATURES)"
+    )
     p.add_argument("--estimate", action="store_true", help="print what the run would cost and exit (no API calls)")
     args = p.parse_args(argv)
 
@@ -121,7 +125,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     apply_tracing_env()
-    settings = dataclasses.replace(load_settings(), daily_limit=1_000_000)  # eval clients are not rate-limited
+    features = frozenset(f for f in args.features.split(",") if f)
+    unknown = features - set(FEATURES)
+    if unknown:
+        raise SystemExit(f"unknown features: {sorted(unknown)}; known: {FEATURES}")
+    # Eval clients are not rate-limited; the features are exactly what this label measures.
+    settings = dataclasses.replace(load_settings(), daily_limit=1_000_000, features=features)
+    print(f"features: {sorted(features) or 'none (the 7b behaviour)'}")
     assert settings.owner_database_url, "OWNER_DATABASE_URL must be set (seeding and truth run as the owner)"
     owner = psycopg.connect(settings.owner_database_url, row_factory=dict_row, autocommit=True)
     print("seeded the eval ledger now" if seed(owner) else "eval ledger already seeded")
@@ -149,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     break
                 record = run_one(assistant, meter, owner, truth, item, rep, args.label, rng)
+                record["features"] = sorted(features)
                 used += record["chat_calls"] + record["embed_calls"]
                 out.write(json.dumps(record) + "\n")
                 out.flush()

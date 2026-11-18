@@ -103,6 +103,19 @@ class TransactionsReport(BaseModel):
     transactions: list[TransactionSummary]
 
 
+class TopupItem(BaseModel):
+    """One top-up onto one of the client's accounts (step 7c, list_my_topups)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    transaction_id: UUID
+    account_id: UUID
+    amount_paise: int
+    currency: str
+    status: Literal["pending", "posted", "failed"]
+    created_at: datetime
+
+
 class TransactionDetail(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -252,6 +265,32 @@ class LedgerTools:
             net_change_paise=total_in - total_out,
             transactions=rows[:limit],
         )
+
+    def list_topups(self, ctx: ClientContext, from_: datetime, to: datetime) -> list[TopupItem]:
+        """Every top-up onto any of the client's accounts in [from_, to), newest first, whatever its status."""
+        with client_scope(self._pool, ctx) as conn:
+            rows = conn.execute(
+                """
+                SELECT u.transaction_id, u.account_id, u.amount_paise, u.currency, u.status, t.created_at
+                  FROM agent_topups u
+                  JOIN agent_transactions t ON t.id = u.transaction_id
+                 WHERE t.created_at >= %s AND t.created_at < %s
+                 ORDER BY t.created_at DESC
+                 LIMIT %s
+                """,
+                (from_, to, MAX_LIMIT),
+            ).fetchall()
+        return [
+            TopupItem(
+                transaction_id=r["transaction_id"],
+                account_id=r["account_id"],
+                amount_paise=r["amount_paise"],
+                currency=r["currency"],
+                status=r["status"],
+                created_at=r["created_at"],
+            )
+            for r in rows
+        ]
 
     def explain_transaction(self, ctx: ClientContext, transaction_id: UUID) -> TransactionDetail:
         with client_scope(self._pool, ctx) as conn:

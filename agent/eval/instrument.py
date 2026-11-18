@@ -15,7 +15,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.outputs import LLMResult
 
 from ledger_agent.db import ClientContext
-from ledger_agent.tools import AccountInfo, Balance, LedgerTools, TransactionDetail, TransactionsReport
+from ledger_agent.tools import AccountInfo, Balance, LedgerTools, TopupItem, TransactionDetail, TransactionsReport
 
 
 class Throttle:
@@ -134,6 +134,9 @@ class TimedLedgerTools(LedgerTools):
         limit: int = 50,
     ) -> TransactionsReport:
         return self._timed(self._inner.list_transactions, ctx, account_id, from_, to, limit)  # type: ignore[no-any-return]
+
+    def list_topups(self, ctx: ClientContext, from_: datetime, to: datetime) -> list[TopupItem]:
+        return self._timed(self._inner.list_topups, ctx, from_, to)  # type: ignore[no-any-return]
 
     def explain_transaction(self, ctx: ClientContext, transaction_id: UUID) -> TransactionDetail:
         return self._timed(self._inner.explain_transaction, ctx, transaction_id)  # type: ignore[no-any-return]

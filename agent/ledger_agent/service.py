@@ -72,6 +72,7 @@ class Assistant:
                 pool=self._pool,
                 ctx=ctx,
                 now=self._now(),
+                features=self._settings.features,
             ),
             question,
             trace,
