@@ -4,6 +4,7 @@
     uv run python -m eval.run --label baseline                     # all 50 items x 3
     uv run python -m eval.run --label e1 --subset                  # the 20-item subset x 2
     uv run python -m eval.run --label baseline                     # again: resumes where it stopped
+    uv run python -m eval.run --label e1 --subset --daily-budget 400   # shared by ALL runs per quota day
 
 Results go to eval/results/<label>.jsonl, one line per (item, repetition). A
 second run with the same label skips what is done and retries only upstream
@@ -12,6 +13,7 @@ run stops cleanly at --max-calls, and when the model API fails (429/503) the
 runner waits 30 s, 60 s, 120 s (with jitter) and then records the attempt as
 `upstream_failed`: counted on its own, never as a wrong answer. Three upstream
 failures in a row stop the run (the quota is probably used up for today).
+Exit status: 0 done, 2 stopped at a budget, 3 stopped after upstream failures.
 """
 
 import argparse
@@ -22,8 +24,10 @@ import sys
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from datetime import time as dtime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import psycopg
 from psycopg.rows import dict_row
@@ -99,6 +103,28 @@ def load_label(label: str) -> list[dict[str, Any]]:
     return [r for r in records if r["item"] in subset and r["rep"] <= 2]
 
 
+QUOTA_TZ = ZoneInfo("America/Los_Angeles")  # the Gemini API's per-day quotas reset at midnight Pacific time
+EXIT_BUDGET, EXIT_UPSTREAM = 2, 3
+
+
+def quota_day_start(now: datetime) -> datetime:
+    """The start of the current quota day (midnight Pacific), in UTC."""
+    local = now.astimezone(QUOTA_TZ)
+    return datetime.combine(local.date(), dtime(0), QUOTA_TZ).astimezone(UTC)
+
+
+def calls_used_since(start: datetime, results_dir: Path | None = None) -> int:
+    """API calls recorded by every run since `start`: every line counts, also a retried upstream failure's."""
+    used = 0
+    for path in sorted((results_dir or RESULTS_DIR).glob("*.jsonl")):
+        for line in path.read_text().splitlines():
+            if line.strip():
+                r = json.loads(line)
+                if datetime.fromisoformat(r["started_at"]) >= start:
+                    used += r.get("chat_calls", 0) + r.get("embed_calls", 0)
+    return used
+
+
 def backoff_delays(rng: random.Random) -> list[float]:
     """30, 60, 120 s, each with up to +20 % jitter so parallel runners do not retry in lock-step."""
     return [b * (1 + 0.2 * rng.random()) for b in BACKOFF_S]
@@ -116,6 +142,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rpm-embed", type=int, default=10, help="embedding requests per minute")
     p.add_argument(
         "--max-calls", type=int, default=400, help="stop before exceeding this many API calls in this invocation"
+    )
+    p.add_argument(
+        "--daily-budget",
+        type=int,
+        default=0,
+        help="also stop before ALL runs together exceed this many calls in the current quota day (midnight Pacific)",
     )
     p.add_argument(
         "--features", default="", help="comma-separated improvements to switch on (ledger_agent.graph.FEATURES)"
@@ -137,8 +169,19 @@ def main(argv: list[str] | None = None) -> int:
         f"estimated API calls for those: {chat_est} chat + {emb_est} embedding = {chat_est + emb_est}"
         f" (~{chat_est * EST_INPUT_TOKENS_PER_CHAT_CALL:,} input tokens); budget this invocation: {args.max_calls}"
     )
+    budget = args.max_calls
+    if args.daily_budget:
+        used_today = calls_used_since(quota_day_start(datetime.now(UTC)))
+        budget = min(budget, max(0, args.daily_budget - used_today))
+        print(
+            f"quota day so far: {used_today} calls by all runs; daily budget {args.daily_budget}; "
+            f"this run may use {budget}"
+        )
     if args.estimate or not todo:
         return 0
+    if budget < min(sum(ESTIMATED_CALLS[i.category]) for i, _ in todo):
+        print("no budget left for the quota day; stopping before any API call")
+        return EXIT_BUDGET
 
     apply_tracing_env()
     features = frozenset(f for f in args.features.split(",") if f)
@@ -168,12 +211,12 @@ def main(argv: list[str] | None = None) -> int:
         with path.open("a") as out:
             for item, rep in todo:
                 est_chat, est_emb = ESTIMATED_CALLS[item.category]
-                if used + est_chat + est_emb > args.max_calls:
+                if used + est_chat + est_emb > budget:
                     print(
                         f"budget: {used} calls used, the next question may need {est_chat + est_emb}; "
                         "stopping. Re-run to resume."
                     )
-                    break
+                    return EXIT_BUDGET
                 record = run_one(assistant, meter, owner, truth, item, rep, args.label, rng)
                 record["features"] = sorted(features)
                 used += record["chat_calls"] + record["embed_calls"]
@@ -192,7 +235,7 @@ def main(argv: list[str] | None = None) -> int:
                         "three upstream failures in a row: the quota is probably used up. "
                         "Stopping; re-run later to resume."
                     )
-                    break
+                    return EXIT_UPSTREAM
     finally:
         pool.close()
         owner.close()

@@ -4,6 +4,7 @@ import dataclasses
 import json
 import random
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,7 @@ from psycopg.rows import DictRow
 
 from eval.instrument import Meter, Throttle
 from eval.questions import ITEMS, ITEMS_BY_ID, SUBSET, Expect
-from eval.run import estimate, load_done, load_label, plan, run_one
+from eval.run import calls_used_since, estimate, load_done, load_label, plan, quota_day_start, run_one
 from eval.score import score
 from eval.seed import ACCOUNTS, CLIENTS, EVAL_NOW, seed
 from eval.truth import Truth
@@ -292,3 +293,23 @@ def test_subset_view_of_a_full_run_is_the_subset_items_at_reps_one_and_two(
     assert {r["item"] for r in view} == {i.id for i in SUBSET} and {r["rep"] for r in view} == {1, 2}
     with pytest.raises(SystemExit):
         load_label("full@other")
+
+
+def test_the_daily_budget_counts_every_run_since_midnight_pacific(tmp_path: Path) -> None:
+    # 16 Nov 2026 is in PST (UTC-8): the quota day starts at 08:00 UTC.
+    now = datetime(2026, 11, 16, 20, 0, tzinfo=UTC)
+    start = quota_day_start(now)
+    assert start == datetime(2026, 11, 16, 8, 0, tzinfo=UTC)
+    assert quota_day_start(datetime(2026, 11, 16, 7, 59, tzinfo=UTC)) == datetime(2026, 11, 15, 8, 0, tzinfo=UTC)
+
+    def rec(at: str, chat: int, embed: int = 0) -> str:
+        return json.dumps({"item": "b1", "rep": 1, "started_at": at, "chat_calls": chat, "embed_calls": embed})
+
+    (tmp_path / "baseline.jsonl").write_text(
+        "\n".join([rec("2026-11-16T07:59:00+00:00", 50), rec("2026-11-16T08:00:00+00:00", 5, 1)])
+    )
+    # A retried upstream failure: both lines spent quota, both count.
+    (tmp_path / "e1.jsonl").write_text(
+        "\n".join([rec("2026-11-16T09:00:00+00:00", 2), rec("2026-11-16T09:05:00+00:00", 4)])
+    )
+    assert calls_used_since(start, tmp_path) == 12
