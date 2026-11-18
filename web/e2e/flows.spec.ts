@@ -90,6 +90,25 @@ for (const outcome of ['Approve', 'Decline'] as const) {
   });
 }
 
+test('4c. "Add money again" starts a NEW top-up (a new key), not a replay of the last one', async ({ page }) => {
+  await become(page, 'Kavya Nair');
+  await page.goto('/topup');
+  const idOf = async () => (await page.getByText(/Top-up of ₹[\d,.]+, id/).innerText()).match(/id (\w+)…/)![1]!;
+  await page.getByLabel('Amount in rupees').fill('100.00');
+  await page.getByRole('button', { name: 'Request a ₹100.00 top-up' }).click();
+  await page.getByRole('button', { name: 'Approve as the bank' }).click();
+  await expect(page.getByText(/\+₹100.00 entered in the passbook/)).toBeVisible();
+  const first = await idOf();
+
+  await page.getByRole('button', { name: 'Add money again' }).click();
+  await page.getByLabel('Amount in rupees').fill('100.00');
+  await page.getByRole('button', { name: 'Request a ₹100.00 top-up' }).click();
+  await expect(page.getByRole('button', { name: 'Approve as the bank' })).toBeVisible();
+  expect(await idOf()).not.toBe(first);
+  await page.getByRole('button', { name: 'Approve as the bank' }).click(); // leave nothing pending
+  await expect(page.getByText(/\+₹100.00 entered in the passbook/)).toBeVisible();
+});
+
 test('5. the assistant cites its sources and says whether it could verify', async ({ page }) => {
   await become(page, 'Meera Iyer');
   await page.goto('/assistant');

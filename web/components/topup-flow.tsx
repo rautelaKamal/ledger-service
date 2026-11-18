@@ -53,7 +53,9 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
   const [busy, setBusy] = useState(false);
   const [bankSent, setBankSent] = useState<'succeed' | 'fail' | null>(null);
   const [stalled, setStalled] = useState(false);
-  const started = useRef(Date.now());
+  // A new top-up needs a new key; reusing one would replay the previous request.
+  const [key, setKey] = useState(initialKey);
+  const started = useRef(0);
   const done = useRef(false);
   const paise = parseRupees(amount);
 
@@ -73,7 +75,7 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
   useEffect(() => {
     if (!topupId) return;
     started.current = Date.now();
-    void poll();
+    const first = setTimeout(() => void poll(), 0);
     const timer = setInterval(() => {
       if (done.current) return clearInterval(timer);
       if (Date.now() - started.current > GIVE_UP_MS) {
@@ -83,12 +85,11 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
       }
       void poll();
     }, POLL_MS);
-    return () => clearInterval(timer);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+    };
   }, [topupId, poll]);
-
-  useEffect(() => {
-    if (topup && topup.status !== 'pending') setStalled(false);
-  }, [topup]);
 
   const final = topup?.status === 'posted' || topup?.status === 'failed';
 
@@ -101,7 +102,7 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
       const res = await fetch('/api/topups', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ accountId: account, amountPaise: paise.toString(), idempotencyKey: initialKey }),
+        body: JSON.stringify({ accountId: account, amountPaise: paise.toString(), idempotencyKey: key }),
       });
       const body = (await res.json()) as { topupId: string | null; error?: string; exchange?: { response: { status: number; body: { error?: { message?: string } } } } };
       if (!res.ok || !body.topupId) {
@@ -231,7 +232,20 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
       ) : null}
       {final ? (
         <div>
-          <Button variant="outline" onClick={() => (window.location.href = '/topup')}>
+          <Button
+            variant="outline"
+            onClick={() => {
+              done.current = false;
+              setTopup(null);
+              setTopupId(undefined);
+              setBankSent(null);
+              setStalled(false);
+              setError(null);
+              setAmount('');
+              setKey(`web-topup-${crypto.randomUUID()}`);
+              router.replace('/topup');
+            }}
+          >
             Add money again
           </Button>
         </div>
