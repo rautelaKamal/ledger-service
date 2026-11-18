@@ -9,6 +9,9 @@ export async function become(page: Page, name: 'Meera Iyer' | 'Arjun Rao' | 'Kav
 
 /** WCAG 2.2 A/AA rules, the whole page. */
 export async function expectAccessible(page: Page): Promise<void> {
+  // Let running animations finish first: text caught mid-fade (the stamp lands
+  // from opacity 0) is semi-transparent, and axe would report its contrast.
+  await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running'));
   // @axe-core/playwright types `page` with its own peer copy of playwright-core (1.65.1);
   // @playwright/test brings 1.65.0. Same API, different type identity: bridge it here.
   const options = { page } as unknown as ConstructorParameters<typeof AxeBuilder>[0];
