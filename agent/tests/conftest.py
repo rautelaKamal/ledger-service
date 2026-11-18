@@ -15,6 +15,7 @@ from typing import cast
 import psycopg
 import pytest
 from psycopg.rows import DictRow, dict_row
+from psycopg_pool import ConnectionPool
 
 from ledger_agent.config import Settings
 from ledger_agent.db import ClientContext, create_pool
@@ -48,12 +49,27 @@ def owner() -> Iterator[psycopg.Connection[DictRow]]:
 
 
 @pytest.fixture(scope="session")
-def tools(settings: Settings) -> Iterator[LedgerTools]:
-    pool = create_pool(settings.database_url, settings.pool_size)
+def pool(settings: Settings) -> Iterator[ConnectionPool[psycopg.Connection[DictRow]]]:
+    p = create_pool(settings.database_url, settings.pool_size)
     try:
-        yield LedgerTools(pool)
+        yield p
     finally:
-        pool.close()
+        p.close()
+
+
+@pytest.fixture(scope="session")
+def tools(pool: ConnectionPool[psycopg.Connection[DictRow]]) -> LedgerTools:
+    return LedgerTools(pool)
+
+
+@pytest.fixture(scope="session")
+def ingested(owner: psycopg.Connection[DictRow]) -> None:
+    """The real policy documents, embedded with the fake embedder, once per session."""
+    from ledger_agent.rag import sync_policies
+
+    from .fakes import FakeEmbeddings
+
+    sync_policies(owner, FakeEmbeddings(), Path(__file__).resolve().parents[1] / "policies", "fake-768")
 
 
 class Seed:

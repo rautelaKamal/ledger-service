@@ -24,6 +24,10 @@ RUN useradd --uid 1000 --user-group --no-create-home --shell /usr/sbin/nologin a
 WORKDIR /app
 COPY --from=deps /app/.venv /app/.venv
 COPY ledger_agent ./ledger_agent
+# Step 7b: the policy documents and the ingestion script, so ingestion can run
+# from this image (compose service agent-ingest). The smoke script stays out.
+COPY policies ./policies
+COPY scripts/ingest_policies.py ./scripts/ingest_policies.py
 ENV PATH=/app/.venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1

@@ -174,6 +174,12 @@ services:
     environment:
       AGENT_DATABASE_URL: *agent-url
       PORT: "8000"
+      # From your shell or the repo's .env. Without a key, /ask answers 503;
+      # the probes still work.
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      AGENT_MODEL: ${AGENT_MODEL:-gemini-3.5-flash-lite}
+      AGENT_EMBEDDING_MODEL: ${AGENT_EMBEDDING_MODEL:-gemini-embedding-2}
+      AGENT_DAILY_LIMIT: ${AGENT_DAILY_LIMIT:-20}
     ports:
       - "8000:8000"
     depends_on:
@@ -186,7 +192,28 @@ services:
       timeout: 5s
       retries: 12
     restart: unless-stopped
-    mem_limit: 192m
+    # LangChain, LangGraph and the Google client roughly double the 7a footprint.
+    mem_limit: 320m
+
+  # On demand: embed agent/policies/*.md into policy_chunks (idempotent).
+  #   docker compose -f docker-compose.full.yml run --rm agent-ingest
+  # A separate service because it writes as ledger_owner: the long-running
+  # agent never holds the owner's credentials.
+  agent-ingest:
+    image: ledger-agent:local
+    pull_policy: never
+    profiles: ["tools"]
+    command: ["python", "scripts/ingest_policies.py"]
+    environment:
+      AGENT_DATABASE_URL: *agent-url
+      OWNER_DATABASE_URL: *owner-url
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      AGENT_EMBEDDING_MODEL: ${AGENT_EMBEDDING_MODEL:-gemini-embedding-2}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+    mem_limit: 320m
 
   prometheus:
     image: prom/prometheus:v3.15.1

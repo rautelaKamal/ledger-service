@@ -12,7 +12,7 @@ def test_healthz_and_readyz(settings: Settings) -> None:
         assert client.get("/healthz").json() == {"status": "alive"}
         ready = client.get("/readyz")
         assert ready.status_code == 200
-        assert ready.json() == {"ready": True, "checks": {"database": "up", "migration": "applied"}}
+        assert ready.json() == {"ready": True, "checks": {"database": "up", "migrations": "applied"}}
 
 
 def test_readyz_is_503_when_the_database_is_unreachable() -> None:

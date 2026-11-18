@@ -1,0 +1,122 @@
+"""POST /ask: the header, the cap, upstream failures, and what gets recorded."""
+
+from datetime import UTC, datetime
+
+import psycopg
+from fastapi.testclient import TestClient
+from psycopg.rows import DictRow
+
+from ledger_agent.api import create_app
+from ledger_agent.config import Settings
+from ledger_agent.verify import Answer
+
+from .conftest import Seed
+from .fakes import FakeChatModel, FakeEmbeddings, Script, ToolCall
+
+NOW = datetime(2026, 11, 16, 9, 0, tzinfo=UTC)
+
+
+def client_for(settings: Settings, script: Script) -> tuple[TestClient, FakeChatModel]:
+    chat = FakeChatModel(script=script)
+    app = create_app(settings, chat=chat, embeddings=FakeEmbeddings(), now_fn=lambda: NOW)
+    return TestClient(app), chat
+
+
+def runs_for(owner: psycopg.Connection[DictRow], client_id: str) -> int:
+    row = owner.execute("SELECT count(*) AS n FROM agent_runs WHERE client_id = %s", (client_id,)).fetchone()
+    assert row is not None
+    return int(row["n"])
+
+
+def test_ask_requires_the_client_header_and_a_question(settings: Settings) -> None:
+    client, _ = client_for(settings, Script(category="out_of_scope"))
+    with client:
+        assert client.post("/ask", json={"question": "hi"}).status_code == 400
+        assert client.post("/ask", json={"question": ""}, headers={"X-Client-Id": "a"}).status_code == 422
+        assert (
+            client.post("/ask", json={"question": "hi", "client_id": "b"}, headers={"X-Client-Id": "a"}).status_code
+            == 422
+        )
+
+
+def test_ask_answers_and_records_a_run(settings: Settings, seed: Seed, owner: psycopg.Connection[DictRow]) -> None:
+    ctx = seed.client()
+    acct = seed.account(ctx, "main")
+    seed.posted("topup", seed.settlement(), acct, 4_200)
+    client, _ = client_for(
+        settings,
+        Script(rounds=[[ToolCall("list_my_accounts", {})], []], answers=[Answer(answer="Your balance is ₹42.00.")]),
+    )
+    with client:
+        res = client.post("/ask", json={"question": "balance?"}, headers={"X-Client-Id": ctx.client_id})
+    assert res.status_code == 200
+    body = res.json()
+    assert body == {"answer": "Your balance is ₹42.00.", "citations": [], "verified": True, "run_id": body["run_id"]}
+    assert runs_for(owner, ctx.client_id) == 1
+
+
+def test_rate_limit_is_checked_before_any_model_call(
+    settings: Settings, seed: Seed, owner: psycopg.Connection[DictRow]
+) -> None:
+    ctx = seed.client()
+    limited = Settings(database_url=settings.database_url, pool_size=2, daily_limit=2)
+    client, chat = client_for(limited, Script(category="out_of_scope"))
+    with client:
+        headers = {"X-Client-Id": ctx.client_id}
+        assert client.post("/ask", json={"question": "one"}, headers=headers).status_code == 200
+        assert client.post("/ask", json={"question": "two"}, headers=headers).status_code == 200
+        calls_before = len(chat.prompts)
+        third = client.post("/ask", json={"question": "three"}, headers=headers)
+    assert third.status_code == 429 and third.headers["retry-after"] == "3600"
+    assert third.json()["error"]["code"] == "rate_limited"
+    assert len(chat.prompts) == calls_before  # the model was never asked
+    assert runs_for(owner, ctx.client_id) == 2
+
+
+def test_upstream_failure_is_503_and_does_not_count(
+    settings: Settings, seed: Seed, owner: psycopg.Connection[DictRow]
+) -> None:
+    ctx = seed.client()
+    limited = Settings(database_url=settings.database_url, pool_size=2, daily_limit=1)
+    client, chat = client_for(limited, Script(category="account", fail_with=RuntimeError("429 RESOURCE_EXHAUSTED")))
+    with client:
+        headers = {"X-Client-Id": ctx.client_id}
+        res = client.post("/ask", json={"question": "balance?"}, headers=headers)
+        assert res.status_code == 503 and res.headers["retry-after"] == "30"
+        assert res.json()["error"]["code"] == "model_unavailable"
+        assert runs_for(owner, ctx.client_id) == 0  # logged, not recorded ...
+        chat.script.fail_with = None
+        chat.script.category = "out_of_scope"
+        ok = client.post("/ask", json={"question": "again"}, headers=headers)
+    assert ok.status_code == 200  # ... so it did not use up the (single) daily question
+    assert runs_for(owner, ctx.client_id) == 1
+
+
+def test_agent_cannot_insert_a_run_for_another_client(pool: object, seed: Seed) -> None:
+    import pytest
+
+    from ledger_agent.db import client_scope
+    from ledger_agent.runs import RunRecord, insert_run
+
+    me, them = seed.client(), seed.client()
+    record = RunRecord(
+        question="q", category="account", answer="a", verified=True, attempts=1, model="fake", latency_ms=1
+    )
+    # Through the service's own code path (INSERT ... RETURNING id) ...
+    with pytest.raises(psycopg.errors.InsufficientPrivilege), client_scope(pool, me, read_only=False) as conn:  # type: ignore[arg-type]
+        insert_run(conn, them.client_id, record)
+    # ... and as a bare INSERT without RETURNING. RETURNING is also checked against
+    # the SELECT policy, so this second case is what proves the INSERT policy itself.
+    with pytest.raises(psycopg.errors.InsufficientPrivilege), client_scope(pool, me, read_only=False) as conn:  # type: ignore[arg-type]
+        conn.execute(
+            "INSERT INTO agent_runs (client_id, question, category, answer, verified, attempts, model, latency_ms)"
+            " VALUES (%s, 'q', 'account', 'a', true, 1, 'fake', 1)",
+            (them.client_id,),
+        )
+    # The same bare INSERT for the client in scope is allowed: the refusal above is about WHO.
+    with client_scope(pool, me, read_only=False) as conn:  # type: ignore[arg-type]
+        conn.execute(
+            "INSERT INTO agent_runs (client_id, question, category, answer, verified, attempts, model, latency_ms)"
+            " VALUES (%s, 'q', 'account', 'a', true, 1, 'fake', 1)",
+            (me.client_id,),
+        )

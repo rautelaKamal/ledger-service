@@ -16,3 +16,11 @@ reconcile-report.json
 # Load-test inputs/outputs (seeded account ids, k6 summaries).
 load/out/*
 !load/out/.gitkeep
+
+# Python (agent/): bytecode, virtualenv, tool caches. Never committed.
+__pycache__/
+*.pyc
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/

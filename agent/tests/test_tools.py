@@ -58,7 +58,7 @@ def test_list_transactions_shows_direction_counterparty_window_and_pending_topup
     # Something that is not this account's business at all.
     seed.posted("transfer", payee, seed.account(other, "spare"), 1, created_at=t0 + timedelta(days=1))
 
-    rows = tools.list_transactions(ctx, acct)
+    rows = tools.list_transactions(ctx, acct).transactions
 
     assert [r.transaction_id for r in rows] == [waiting, received, paid, funded]  # newest first
     by_id = {r.transaction_id: r for r in rows}
@@ -77,12 +77,14 @@ def test_list_transactions_shows_direction_counterparty_window_and_pending_topup
     assert all(type(r.amount_paise) is int for r in rows)
 
     # The window is [from, to).
-    window = tools.list_transactions(ctx, acct, from_=t0 + timedelta(days=1), to=t0 + timedelta(days=2))
-    assert [r.transaction_id for r in window] == [paid]
-    assert [r.transaction_id for r in tools.list_transactions(ctx, acct, limit=1)] == [waiting]
+    report = tools.list_transactions(ctx, acct, from_=t0 + timedelta(days=1), to=t0 + timedelta(days=2))
+    assert [r.transaction_id for r in report.transactions] == [paid]
+    assert (report.total_in_paise, report.total_out_paise, report.net_change_paise) == (0, 2_500, -2_500)
+    assert (report.opening_balance_paise, report.closing_balance_paise) == (10_000, 7_500)
+    assert [r.transaction_id for r in tools.list_transactions(ctx, acct, limit=1).transactions] == [waiting]
 
     # The payee sees the same transfers from their side: in and out swap.
-    theirs = {r.transaction_id: r for r in tools.list_transactions(other, payee)}
+    theirs = {r.transaction_id: r for r in tools.list_transactions(other, payee).transactions}
     assert theirs[paid].direction == "in" and theirs[paid].counterparty_account_id == acct
     assert theirs[received].direction == "out"
     assert funded not in theirs and waiting not in theirs

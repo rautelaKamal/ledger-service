@@ -57,6 +57,7 @@ def create_pool(database_url: str, size: int = 4) -> ConnectionPool[psycopg.Conn
 def client_scope(
     pool: ConnectionPool[psycopg.Connection[DictRow]],
     ctx: ClientContext,
+    read_only: bool = True,
 ) -> Iterator[psycopg.Connection[DictRow]]:
     """One request's worth of reads, as one client.
 
@@ -64,9 +65,20 @@ def client_scope(
     The third argument `true` makes the setting LOCAL: it ends with the
     transaction, so the next borrower of this pooled connection starts with
     no client id and therefore sees nothing.
+
+    read_only=False exists for exactly one caller: writing the audit row to
+    agent_runs (step 7b). The grants still allow nothing else, and row-level
+    security still binds the row to this client.
     """
-    with pool.connection() as conn, conn.transaction():
-        # A bind parameter, never string-built SQL: the id is data to Postgres,
-        # whatever quotes, semicolons or keywords it contains.
-        conn.execute("SELECT set_config('app.client_id', %s, true)", (ctx.client_id,))
-        yield conn
+    with pool.connection() as conn:
+        if not read_only:
+            conn.read_only = False
+        try:
+            with conn.transaction():
+                # A bind parameter, never string-built SQL: the id is data to Postgres,
+                # whatever quotes, semicolons or keywords it contains.
+                conn.execute("SELECT set_config('app.client_id', %s, true)", (ctx.client_id,))
+                yield conn
+        finally:
+            if not read_only:
+                conn.read_only = True
