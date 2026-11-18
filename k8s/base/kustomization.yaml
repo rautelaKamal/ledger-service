@@ -34,6 +34,9 @@ resources:
   - observability/prometheus.yaml
   - observability/grafana.yaml
   - networkpolicy.yaml
+  - agent/deployment.yaml
+  - agent/service.yaml
+  - agent/networkpolicy.yaml
 
 # Files become ConfigMaps with a content hash in their name (db-init-7f3k...).
 # Every workload that mounts one references it by that hashed name, so when a

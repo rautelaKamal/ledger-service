@@ -1,0 +1,77 @@
+# Who may talk to the assistant, and whom it may talk to.
+#
+# INGRESS
+#   8000 (the API)     only from pods labelled app=web: the web app's server
+#                      side (7d) is the assistant's ONLY caller. Not the ledger
+#                      api (it never calls the agent), not an ingress controller
+#                      (the agent is never public: the public entry point is the
+#                      web app, which on k3s/6c sits behind Traefik).
+#                      Overlays replace this list: patch /spec/ingress/0/from.
+#   9102 (metrics)     only from Prometheus.
+#   (kubectl port-forward reaches pods without going through the network, so a
+#   developer can still talk to the agent on kind; NetworkPolicy does not apply.)
+#
+# EGRESS (the agent is the first workload here with an egress policy)
+#   postgres:5432      its database
+#   kube-dns:53        name resolution
+#   any PUBLIC address on 443, for the Gemini and LangSmith APIs: 0.0.0.0/0
+#   minus every private and link-local range, so nothing inside the cluster
+#   (api, workers, mock provider, Prometheus) is reachable on 443 or any port.
+#   A NetworkPolicy cannot name hosts: "only *.googleapis.com" needs a CNI with
+#   FQDN policies (Cilium) or an egress gateway. Said so in the docs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent
+spec:
+  podSelector:
+    matchLabels:
+      app: agent
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: web
+      ports:
+        - port: http
+          protocol: TCP
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - port: metrics
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP

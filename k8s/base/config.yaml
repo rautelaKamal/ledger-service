@@ -35,3 +35,19 @@ metadata:
 data:
   PROVIDER_PORT: "4100"
   LEDGER_WEBHOOK_URL: http://api:3000/webhooks/provider
+---
+# The assistant (step 7). The API key and LangSmith settings are in the Secret
+# agent-secrets (scripts/k8s/secrets.sh, from agent/.env).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-config
+data:
+  PORT: "8000"
+  AGENT_METRICS_PORT: "9102"
+  AGENT_MODEL: gemini-3.5-flash-lite
+  AGENT_EMBEDDING_MODEL: gemini-embedding-2
+  AGENT_EMBEDDING_DIMENSIONS: "768"
+  AGENT_DAILY_LIMIT: "20"
+  # No home directory in the image; libraries that cache go to /tmp (an emptyDir).
+  HOME: /tmp

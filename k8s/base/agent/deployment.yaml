@@ -1,0 +1,112 @@
+# The assistant (agent/, step 7): FastAPI + LangGraph, reading the ledger as
+# ledger_agent (SELECT on four views, row-filtered per client) and calling the
+# Gemini API over HTTPS. It has no write access to the ledger at all.
+#
+# Not public: its only caller is the web app's server side (7d, label app=web),
+# enforced by the NetworkPolicy in networkpolicy.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent
+  labels:
+    app: agent
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: agent
+  template:
+    metadata:
+      labels:
+        app: agent
+    spec:
+      # preStop sleep (5 s) + up to 35 s for a question already in flight
+      # (a slow one is ~20 s: several model round trips) + margin.
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        # The image's `agent` user (uid 1000, like the Node images).
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          image: ledger-agent
+          imagePullPolicy: IfNotPresent
+          # uvicorn directly (no shell): SIGTERM reaches it, and it finishes
+          # in-flight requests for up to 35 s before exiting.
+          command: ["uvicorn", "ledger_agent.api:app", "--host", "0.0.0.0", "--port", "8000",
+                    "--timeout-graceful-shutdown", "35"]
+          ports:
+            - name: http
+              containerPort: 8000
+            - name: metrics
+              containerPort: 9102
+          envFrom:
+            - configMapRef:
+                name: agent-config
+          env:
+            - name: AGENT_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: ledger-secrets, key: AGENT_DATABASE_URL } }
+            # The model API key and the optional LangSmith settings. Created by
+            # scripts/k8s/secrets.sh from agent/.env; never in git. Without a
+            # key the agent starts, its probes pass, and /ask answers 503.
+            - name: GOOGLE_API_KEY
+              valueFrom: { secretKeyRef: { name: agent-secrets, key: GOOGLE_API_KEY, optional: true } }
+            - name: LANGSMITH_TRACING
+              valueFrom: { secretKeyRef: { name: agent-secrets, key: LANGSMITH_TRACING, optional: true } }
+            - name: LANGSMITH_API_KEY
+              valueFrom: { secretKeyRef: { name: agent-secrets, key: LANGSMITH_API_KEY, optional: true } }
+            - name: LANGSMITH_PROJECT
+              valueFrom: { secretKeyRef: { name: agent-secrets, key: LANGSMITH_PROJECT, optional: true } }
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            # Ready = the database answers as ledger_agent and migrations 008/009
+            # are applied. Not ready = no traffic, nothing restarted.
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            # /healthz has no dependencies: a model outage must never restart pods.
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          resources:
+            # LangChain + LangGraph + the Google client: ~180 MiB resident.
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # Python writes nothing (bytecode is compiled in the image); libraries
+            # that want a cache directory get /tmp, never the image.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
