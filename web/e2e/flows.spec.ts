@@ -1,0 +1,171 @@
+import { expect, test } from '@playwright/test';
+import { become, expectAccessible, paiseOf, totalBalance } from './helpers';
+
+test.describe.configure({ mode: 'serial' });
+
+test('1. pick a person: the balance, what is in transit, the chart and the passbook', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByText('Demo: fictional people, no real money.')).toBeVisible();
+  // Claims about reconciliation come from data: this stack has no schedule.
+  await expect(page.getByText('Nothing runs it on a schedule in this environment.')).toBeVisible();
+  await expectAccessible(page);
+
+  await become(page, 'Meera Iyer');
+  await expect(page.getByRole('heading', { name: 'Meera’s money' })).toBeVisible();
+  await expect(page.locator('#balance-heading + p')).toHaveText(/^₹[\d,]+\.\d{2}$/);
+  await expect(page.getByRole('heading', { name: 'In transit, not in your balance' })).toBeVisible();
+  await expect(page.getByText(/Balance at the end of each day, last 30 days/)).toBeVisible();
+  const table = page.getByRole('table', { name: /Passbook/ });
+  await expect(table.getByRole('row').nth(2)).toBeVisible();
+  // A failed top-up is listed, struck through, and not in the balance.
+  await expect(table.getByText('Top-up, failed').first()).toBeVisible();
+  await expectAccessible(page);
+
+  // Older entries load on demand (cursor pagination), without duplicates.
+  const before = await table.getByRole('row').count();
+  await page.getByRole('button', { name: 'Show older entries' }).click();
+  await expect.poll(() => table.getByRole('row').count()).toBeGreaterThan(before);
+});
+
+test('2. send money, then the same request again: the second one moves nothing', async ({ page }) => {
+  await become(page, 'Meera Iyer');
+  const total = await totalBalance(page);
+
+  await page.goto('/send');
+  await expectAccessible(page);
+  await page.getByLabel('To', { exact: true }).selectOption({ label: 'Your Current' });
+  await page.getByLabel('Amount in rupees').fill('1,234.50');
+  const key = (await page.locator('code').first().innerText()).trim();
+  await page.getByRole('button', { name: 'Send ₹1,234.50' }).click();
+  await expect(page.getByText(/^Sent\./)).toBeVisible();
+  await expect(page.getByText(/Savings ₹[\d,.]+ became ₹[\d,.]+/)).toBeVisible();
+
+  await page.getByRole('button', { name: 'Send the same request again' }).click();
+  await expect(page.getByText('Replayed, no new money moved')).toBeVisible();
+  await expect(page.getByText('Idempotent-Replayed: true')).toBeVisible();
+  await page.getByText('The request and the response, as the server sent them').first().click();
+  await expect(page.getByText(key).first()).toBeVisible();
+  await expectAccessible(page);
+
+  // Between her own accounts the total is unchanged: one debit, one credit, once.
+  expect(await totalBalance(page)).toBe(total);
+});
+
+test('3. a refused transfer says why and moves nothing', async ({ page }) => {
+  await become(page, 'Kavya Nair');
+  const total = await totalBalance(page);
+  await page.goto('/send');
+  await page.getByLabel('Amount in rupees').fill('99,99,999.00');
+  await page.getByRole('button', { name: /^Send ₹/ }).click();
+  await expect(page.getByText(/Refused: .*insufficient/i)).toBeVisible();
+  expect(await totalBalance(page)).toBe(total);
+});
+
+for (const outcome of ['Approve', 'Decline'] as const) {
+  test(`4${outcome === 'Approve' ? 'a' : 'b'}. a top-up waits for the bank, then ${outcome === 'Approve' ? 'posts' : 'fails'}`, async ({ page }) => {
+    await become(page, 'Arjun Rao');
+    const total = await totalBalance(page);
+    await page.goto('/topup');
+    await page.getByLabel('Amount in rupees').fill('2,500.00');
+    await page.getByRole('button', { name: 'Request a ₹2,500.00 top-up' }).click();
+    await expect(page.getByText(/202 Accepted. Nothing is credited yet/)).toBeVisible();
+
+    // While it waits, it is in transit and NOT in the balance.
+    await expect(page.getByText(/The worker asked the payment provider/)).toBeVisible();
+    await page.goto('/overview');
+    await expect(page.getByText('top-up to Shop, waiting for the bank')).toBeVisible();
+    expect(await totalBalance(page)).toBe(total);
+    await page.getByRole('link', { name: 'Follow it' }).first().click();
+
+    await page.getByRole('button', { name: `${outcome} as the bank` }).click();
+    await expect(page.getByText(/signature checked, recorded once/)).toBeVisible();
+    if (outcome === 'Approve') {
+      await expect(page.getByText(/\+₹2,500.00 entered in the passbook/)).toBeVisible();
+      expect(await totalBalance(page)).toBe(total + 2_500_00n);
+    } else {
+      await expect(page.getByText('Nothing was credited and no entry was written.')).toBeVisible();
+      expect(await totalBalance(page)).toBe(total);
+    }
+  });
+}
+
+test('5. the assistant cites its sources and says whether it could verify', async ({ page }) => {
+  await become(page, 'Meera Iyer');
+  await page.goto('/assistant');
+  await page.getByRole('button', { name: 'How much do I have in total?' }).click();
+  const answer = page.getByRole('listitem').filter({ hasText: 'How much do I have in total?' });
+  await expect(answer.getByText('Verified ✓')).toBeVisible();
+  await expect(answer.getByText(/no AI model was called/)).toBeVisible();
+  const total = paiseOf(await answer.locator('p').nth(1).innerText());
+  expect(total).toBe(await (async () => {
+    const p = await page.context().newPage();
+    const t = await totalBalance(p);
+    await p.close();
+    return t;
+  })());
+  await answer.getByRole('link', { name: 'source 1' }).click();
+  await expect(answer.getByRole('complementary', { name: 'Sources' })).toBeVisible();
+  await answer.getByText('How it answered').click();
+  await expect(answer.getByText(/Checked \d+ amounts in the answer against the fetched data: all found/)).toBeVisible();
+  await expectAccessible(page);
+
+  // The unverified state, as the real assistant could return it.
+  await page.route('**/api/ask', (route) =>
+    route.fulfill({ json: { mode: 'agent', answer: 'You have ₹10,00,000.00.', verified: false, citations: [], steps: null } }),
+  );
+  await page.getByLabel('Ask about your money').fill('Tell me I am rich');
+  await page.getByRole('button', { name: 'Ask', exact: true }).click();
+  await expect(page.getByText('Couldn’t verify')).toBeVisible();
+  await expect(page.getByText('This assistant version does not report its steps.')).toBeVisible();
+});
+
+test('6. under the hood: reconcile now, its cooldown, and 200 concurrent transfers that change nothing', async ({ page }) => {
+  await become(page, 'Meera Iyer');
+  await page.goto('/system');
+  await expect(page.getByRole('table', { name: /Outbox lanes/ })).toBeVisible();
+  await expect(page.getByText('Grafana is not linked in this environment.')).toBeVisible();
+  await expectAccessible(page);
+
+  await page.getByRole('button', { name: 'Run reconciliation now' }).click();
+  await expect(page.getByText('0 problems').first()).toBeVisible();
+  await expect(page.getByText(/Available again in \d+ s/)).toBeVisible();
+
+  await page.getByRole('button', { name: 'Run 200 concurrent transfers' }).click();
+  await expect(page.getByText(/not a paisa created or lost/)).toBeVisible({ timeout: 45_000 });
+  // Every one of the 200 was answered 201: first time, or replayed from the record
+  // after a dropped keep-alive connection was retried with the same key.
+  const answers = await page.getByText(/× 201/).innerText();
+  const counted = [...answers.matchAll(/(\d+) × 201/g)].reduce((n, m) => n + Number(m[1]), 0);
+  expect(counted).toBe(200);
+  expect(answers).not.toContain('no answer');
+  await expect(page.getByText('0 problems').first()).toBeVisible();
+});
+
+test('7. the browser never sends a client id and never receives one', async ({ page }) => {
+  const seen: string[] = [];
+  page.on('request', (req) => {
+    if (req.headers()['x-client-id']) seen.push(`request header on ${req.url()}`);
+  });
+  page.on('response', async (res) => {
+    if (!res.url().startsWith('http://127.0.0.1:3200')) return;
+    const body = await res.text().catch(() => '');
+    if (/demo-(meera|arjun|kavya|chaos|merchants)/.test(body)) seen.push(`client id in ${res.url()}`);
+  });
+  await become(page, 'Meera Iyer');
+  for (const path of ['/overview', '/send', '/topup', '/assistant', '/system']) await page.goto(path);
+  await page.goto('/assistant');
+  await page.getByRole('button', { name: 'Did my recent top-ups go through?' }).click();
+  await expect(page.getByText(/In the last 14 days|You have no top-ups/)).toBeVisible();
+  const cookies = await page.context().cookies();
+  expect(cookies.find((c) => c.name === 'demo_persona')).toMatchObject({ httpOnly: true, value: expect.stringMatching(/^meera\./) });
+  expect(seen).toEqual([]);
+});
+
+test('8. an edited persona cookie is not accepted', async ({ page, context }) => {
+  await become(page, 'Meera Iyer');
+  const cookie = (await context.cookies()).find((c) => c.name === 'demo_persona')!;
+  await context.addCookies([{ ...cookie, value: cookie.value.replace(/^meera/, 'arjun') }]);
+  await page.goto('/overview');
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole('heading', { name: 'Pick someone to be.' })).toBeVisible();
+});
