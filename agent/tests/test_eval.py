@@ -1,5 +1,6 @@
 """The eval machinery, with a fake model: seed, truth, scoring, backoff, resume, throttle. No API calls."""
 
+import dataclasses
 import json
 import random
 import re
@@ -171,7 +172,9 @@ class _FlakyAssistant:
 
 
 def _assistant(pool: Any, settings: Settings, script: Script) -> Assistant:
-    return Assistant(pool, settings, FakeChatModel(script=script), FakeEmbeddings(), now_fn=lambda: EVAL_NOW)
+    # Like the runner: the eval clients ask far more than the per-client cap, and every test run adds audit rows.
+    uncapped = dataclasses.replace(settings, daily_limit=1_000_000)
+    return Assistant(pool, uncapped, FakeChatModel(script=script), FakeEmbeddings(), now_fn=lambda: EVAL_NOW)
 
 
 def test_backoff_retries_upstream_failures_then_scores(
