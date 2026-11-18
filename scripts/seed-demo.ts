@@ -57,11 +57,14 @@ try {
   await client.query('BEGIN');
   const ids = new Map<string, string>(); // "meera:Savings" -> uuid
   const balance = new Map<string, bigint>();
+  // One second apart: every account in this transaction would otherwise share now(),
+  // and the API lists a client's accounts oldest first (Savings before Current).
+  let opened = 0;
   async function account(owner: string, name: string, key: string): Promise<void> {
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO accounts (name, kind, currency, owner_client_id, created_at)
-       VALUES ($1, 'user', 'INR', $2, now() - interval '31 days') RETURNING id`,
-      [name, owner],
+       VALUES ($1, 'user', 'INR', $2, now() - interval '31 days' + make_interval(secs => $3)) RETURNING id`,
+      [name, owner, opened++],
     );
     ids.set(key, rows[0]!.id);
     balance.set(key, 0n);
@@ -76,7 +79,9 @@ try {
     const d = new Date(Date.now() - daysAgo * 86_400_000);
     const ist = new Date(d.getTime() + 5.5 * 3_600_000);
     ist.setUTCHours(hourIst, Math.floor(rand() * 60), Math.floor(rand() * 60), 0);
-    return new Date(ist.getTime() - 5.5 * 3_600_000).toISOString();
+    // "Today" at 20:00 is still in the future at 09:00: never write history ahead of now.
+    const when = Math.min(ist.getTime() - 5.5 * 3_600_000, Date.now() - (10 + Math.floor(rand() * 50)) * 60_000);
+    return new Date(when).toISOString();
   };
 
   async function move(kind: 'transfer' | 'topup', from: string, to: string, paise: bigint, when: string, note: string | null): Promise<void> {
