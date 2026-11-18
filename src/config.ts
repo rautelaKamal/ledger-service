@@ -12,6 +12,11 @@ const EnvSchema = z
     METRICS_PORT: z.coerce.number().int().positive().optional(),
     // Shared secret the provider signs webhooks with. Never hard-code it.
     WEBHOOK_SECRET: z.string().min(16, 'use at least 16 characters'),
+    // Step 7d: the internal port's /system routes (status, reconcile now, chaos slot)
+    // log in as ledger_reconciler. Unset: those routes answer 503 "not configured".
+    RECONCILER_DATABASE_URL: z.string().startsWith('postgres://').optional(),
+    // One start per action per this many seconds, across all replicas (system_actions).
+    SYSTEM_COOLDOWN_SECONDS: z.coerce.number().int().min(1).max(3600).default(60),
   })
   .refine((c) => c.METRICS_PORT !== c.PORT, { message: 'METRICS_PORT must differ from PORT', path: ['METRICS_PORT'] });
 
