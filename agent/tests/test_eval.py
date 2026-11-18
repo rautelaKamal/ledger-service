@@ -247,3 +247,32 @@ def test_throttle_wait_is_measured_so_the_runner_can_keep_it_out_of_latency() ->
     assert 59 < meter.wait_s < 61 and meter.embed_calls == 2
     meter.reset()
     assert meter.wait_s == 0.0
+
+
+def test_trace_latency_attributes_model_tool_and_our_code() -> None:
+    from types import SimpleNamespace as R
+
+    from eval.trace_latency import split_traces
+
+    def run(trace: str, run_type: str, latency: float, root: bool = False, status: str = "success") -> R:
+        meta = {"eval_item": "b1", "eval_rep": 1, "eval_category": "balance"} if root else {}
+        return R(trace_id=trace, is_root=root, run_type=run_type, latency_seconds=latency, status=status, metadata=meta)
+
+    runs = [
+        run("t1", "chain", 10.0, root=True),
+        run("t1", "llm", 3.0),
+        run("t1", "llm", 4.0),
+        run("t1", "embedding", 0.5),
+        run("t1", "tool", 0.25),
+        run("t1", "retriever", 0.05),
+        run("t1", "chain", 9.0),  # a nested chain: already inside the root, not counted twice
+        run("t2", "chain", 5.0, root=True, status="error"),  # an upstream failure: not a latency sample
+        run("t2", "llm", 1.0),
+    ]
+    (s,) = split_traces(runs)
+    assert (s.item, s.category, s.total, s.model, s.tool) == ("b1", "balance", 10.0, 7.5, 0.3)
+    assert abs(s.own - 2.2) < 1e-9
+    # The runner waited 2 s in its own throttle inside the first LLM run: not model time, not latency.
+    (w,) = split_traces(runs, {("b1", 1): 2.0})
+    assert (w.total, w.model) == (8.0, 5.5) and abs(w.own - 2.2) < 1e-9
+    assert split_traces(runs, {}) == []  # no recorded wait for this (item, rep): skipped
