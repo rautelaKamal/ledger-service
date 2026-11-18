@@ -15,7 +15,7 @@ from psycopg.rows import DictRow
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, ConfigDict, Field
 
-from .config import REQUIRED_MIGRATIONS, Settings, load_settings
+from .config import REQUIRED_MIGRATIONS, Settings, apply_tracing_env, load_settings
 from .dates import now_utc
 from .db import ClientContext, create_pool
 from .llm import UpstreamModelError, build_chat_model, build_embeddings
@@ -41,7 +41,13 @@ class AskResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    settings: Settings = getattr(app.state, "settings", None) or load_settings()
+    injected: Settings | None = getattr(app.state, "settings", None)
+    if injected is None:
+        # A real start: agent/.env may switch tracing on. When settings are
+        # injected (tests), the env file is never read, so a developer's
+        # LangSmith key can never make a test run send traces.
+        apply_tracing_env()
+    settings: Settings = injected or load_settings()
     pool = create_pool(settings.database_url, settings.pool_size)
     app.state.settings = settings
     app.state.pool = pool

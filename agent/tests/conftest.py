@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import psycopg
 import pytest
@@ -32,6 +32,29 @@ def _env(name: str) -> str:
             if line.startswith(f"{name}="):
                 return line.split("=", 1)[1].strip()
     raise RuntimeError(f"{name} is not set (and {ENV_FILE} has no value for it)")
+
+
+def clear_langsmith_env_cache() -> None:
+    """langsmith.utils.get_env_var is an lru_cache behind typing overloads (which hide cache_clear from mypy)."""
+    from langsmith import utils as ls_utils
+
+    cast(Any, ls_utils.get_env_var).cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def no_tracing(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """No test ever sends a trace, whatever the developer's shell or agent/.env says.
+
+    langsmith caches its environment lookups (functools.lru_cache), so removing
+    the variables is not enough: the cache is cleared before and after each test.
+    """
+    from ledger_agent.config import TRACING_VARS
+
+    for var in (*TRACING_VARS, "LANGCHAIN_TRACING_V2", "LANGCHAIN_TRACING", "LANGCHAIN_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    clear_langsmith_env_cache()
+    yield
+    clear_langsmith_env_cache()
 
 
 @pytest.fixture(scope="session")

@@ -24,7 +24,7 @@ from psycopg.rows import dict_row
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ledger_agent.config import load_settings
+from ledger_agent.config import apply_tracing_env, load_settings
 from ledger_agent.db import ClientContext, create_pool
 from ledger_agent.llm import build_chat_model, build_embeddings
 from ledger_agent.service import Assistant
@@ -111,6 +111,7 @@ class CountingEmbeddings(Embeddings):
 
 
 def main() -> int:
+    apply_tracing_env()
     settings = load_settings()
     if not settings.owner_database_url:
         print("OWNER_DATABASE_URL is not set", file=sys.stderr)

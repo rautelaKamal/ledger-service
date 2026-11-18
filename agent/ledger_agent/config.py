@@ -42,6 +42,27 @@ def read_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+# LangSmith reads its configuration from the process environment, not from our
+# Settings. These, and only these, are copied from agent/.env into os.environ.
+TRACING_VARS = ("LANGSMITH_TRACING", "LANGSMITH_API_KEY", "LANGSMITH_PROJECT", "LANGSMITH_ENDPOINT")
+
+
+def apply_tracing_env(env_file: Path | None = DEFAULT_ENV_FILE) -> list[str]:
+    """Export the LANGSMITH_* variables found in env_file, unless already set in the environment.
+
+    Returns the names exported (never values). With none of them in the file or
+    the environment, tracing stays off and nothing is sent anywhere.
+    """
+    if env_file is None:
+        return []
+    exported: list[str] = []
+    for name, value in read_env_file(env_file).items():
+        if name in TRACING_VARS and value and name not in os.environ:
+            os.environ[name] = value
+            exported.append(name)
+    return exported
+
+
 def load_settings(env: dict[str, str] | None = None, env_file: Path | None = DEFAULT_ENV_FILE) -> Settings:
     e: dict[str, str] = {}
     if env_file is not None:

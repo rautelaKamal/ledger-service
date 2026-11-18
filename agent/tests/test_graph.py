@@ -316,4 +316,7 @@ def test_langsmith_tracing_is_off_without_its_environment(monkeypatch: pytest.Mo
         monkeypatch.delenv(var, raising=False)
     from langsmith.utils import tracing_is_enabled
 
+    from .conftest import clear_langsmith_env_cache
+
+    clear_langsmith_env_cache()
     assert not tracing_is_enabled()
