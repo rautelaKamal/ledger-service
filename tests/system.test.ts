@@ -95,6 +95,23 @@ describe('reconcile now, with a cooldown', () => {
   });
 });
 
+describe('the check that ends a chaos run', () => {
+  test('8. once per chaos run, even right after someone else reconciled, and never without a run', async () => {
+    const service = createSystemService(reconciler, 60);
+    expect(await service.chaosCheck()).toEqual({ ok: false }); // no chaos run yet
+    expect((await service.reconcileNow()).ok).toBe(true); // someone pressed "reconcile now"
+    expect((await service.claim('chaos')).ok).toBe(true);
+    const check = await service.chaosCheck();
+    expect(check.ok).toBe(true); // not blocked by reconcile's cooldown
+    expect(await service.chaosCheck()).toEqual({ ok: false }); // only once per run
+  });
+
+  test('9. a chaos run older than the window cannot be checked any more', async () => {
+    await owner.query(`INSERT INTO system_actions (action, started_at) VALUES ('chaos', now() - interval '6 minutes')`);
+    expect(await createSystemService(reconciler, 60).chaosCheck()).toEqual({ ok: false });
+  });
+});
+
 describe('the internal port', () => {
   async function start(withSystem: boolean): Promise<{ url: string; close: () => Promise<void> }> {
     const server = await startMetricsServer(new Registry(), 0, withSystem ? createSystemService(reconciler, 60) : undefined);

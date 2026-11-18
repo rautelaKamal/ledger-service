@@ -11,6 +11,9 @@ import { LANE_PREDICATE, LANES, type Lane } from '../worker/lanes.js';
 
 export type SystemAction = 'reconcile' | 'chaos';
 
+/** A chaos run may be checked by reconciliation within this many seconds of its start. */
+export const CHAOS_CHECK_WINDOW_SECONDS = 300;
+
 export const DEFAULT_COOLDOWN_SECONDS = 60;
 
 export interface LaneStatus {
@@ -50,6 +53,11 @@ export interface SystemService {
   claim(action: SystemAction): Promise<Claim>;
   /** claim('reconcile'), then run every check and record the run. */
   reconcileNow(): Promise<{ ok: true; run: ReconciliationRunSummary; report: ReconcileReport } | { ok: false; retryAfterSeconds: number }>;
+  /**
+   * The reconciliation that ends a chaos run: allowed once per chaos run, within
+   * CHAOS_CHECK_WINDOW_SECONDS of its start, regardless of reconcile's cooldown.
+   */
+  chaosCheck(): Promise<{ ok: true; run: ReconciliationRunSummary; report: ReconcileReport } | { ok: false }>;
 }
 
 export function createSystemService(pool: Pool, cooldownSeconds = DEFAULT_COOLDOWN_SECONDS): SystemService {
@@ -139,14 +147,43 @@ export function createSystemService(pool: Pool, cooldownSeconds = DEFAULT_COOLDO
     async reconcileNow() {
       const claim = await this.claim('reconcile');
       if (!claim.ok) return claim;
-      const report = await runReconciliation(pool);
-      const id = await recordRun(pool, report);
-      const problems = Object.values(report.summary).reduce((a, b) => a + b, 0);
-      return {
-        ok: true,
-        report,
-        run: { id: String(id), ranAt: report.ranAt, ok: report.ok, durationMs: report.durationMs, problems, summary: report.summary },
-      };
+      return { ok: true, ...(await reconcileAndRecord()) };
+    },
+
+    async chaosCheck() {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['system_actions:chaos']);
+        const { rows } = await client.query<{ eligible: boolean }>(
+          `SELECT (SELECT max(started_at) FROM system_actions WHERE action = 'chaos') > now() - make_interval(secs => $1)
+              AND (SELECT max(started_at) FROM system_actions WHERE action = 'chaos')
+                  > COALESCE((SELECT max(started_at) FROM system_actions WHERE action = 'chaos_check'), '-infinity') AS eligible`,
+          [CHAOS_CHECK_WINDOW_SECONDS],
+        );
+        if (!rows[0]?.eligible) {
+          await client.query('ROLLBACK');
+          return { ok: false };
+        }
+        await client.query(`INSERT INTO system_actions (action) VALUES ('chaos_check')`);
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw err;
+      } finally {
+        client.release();
+      }
+      return { ok: true, ...(await reconcileAndRecord()) };
     },
   };
+
+  async function reconcileAndRecord(): Promise<{ run: ReconciliationRunSummary; report: ReconcileReport }> {
+    const report = await runReconciliation(pool);
+    const id = await recordRun(pool, report);
+    const problems = Object.values(report.summary).reduce((a, b) => a + b, 0);
+    return {
+      report,
+      run: { id: String(id), ranAt: report.ranAt, ok: report.ok, durationMs: report.durationMs, problems, summary: report.summary },
+    };
+  }
 }

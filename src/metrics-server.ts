@@ -15,6 +15,7 @@ import type { SystemService } from './system/service.js';
 //   GET  /system/status    outbox lanes, last reconciliation, cooldowns   (step 7d)
 //   POST /system/reconcile run every check now, at most once per cooldown (step 7d)
 //   POST /system/chaos     claim the chaos test's slot, once per cooldown  (step 7d)
+//   POST /system/chaos/check  the reconciliation that ends that chaos run   (step 7d)
 //
 // The /system routes exist only when a SystemService is given (it needs
 // RECONCILER_DATABASE_URL); without one they answer 503 and say why.
@@ -52,7 +53,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, registry: Regis
     res.writeHead(200, { 'content-type': registry.contentType }).end(await registry.metrics());
     return;
   }
-  if (!['GET /system/status', 'POST /system/reconcile', 'POST /system/chaos'].includes(route)) {
+  if (!['GET /system/status', 'POST /system/reconcile', 'POST /system/chaos', 'POST /system/chaos/check'].includes(route)) {
     json(res, 404, { error: 'not found' });
     return;
   }
@@ -66,6 +67,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, registry: Regis
   } else if (route === 'POST /system/reconcile') {
     const result = await system.reconcileNow();
     if (!result.ok) return cooldown(res, 'Reconciliation', result.retryAfterSeconds);
+    json(res, 200, { run: result.run, problems: result.report.problems.slice(0, 20) });
+  } else if (route === 'POST /system/chaos/check') {
+    const result = await system.chaosCheck();
+    if (!result.ok) {
+      json(res, 409, { error: { code: 'no_chaos_run', message: 'no chaos run started in the last 5 minutes is waiting for its check' } });
+      return;
+    }
     json(res, 200, { run: result.run, problems: result.report.problems.slice(0, 20) });
   } else {
     // The chaos test itself runs in the web app (200 transfers through the PUBLIC

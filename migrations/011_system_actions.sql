@@ -1,6 +1,9 @@
 -- Step 7d: the "under the hood" page can START two things on demand:
 --   reconcile  run every reconciliation check now and record the run
 --   chaos      the demo's 200-concurrent-transfers test
+--   chaos_check  the reconciliation that ends a chaos run: once per chaos run,
+--              within 5 minutes of its start, never subject to reconcile's own
+--              cooldown (otherwise someone's "reconcile now" could block it)
 --
 -- A public demo must not let anyone run them in a loop, so each action has a
 -- COOLDOWN (one start per N seconds, default 60). It is enforced HERE, in the
@@ -17,7 +20,7 @@ CREATE TABLE system_actions (
     started_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     CONSTRAINT system_actions_action_valid
-        CHECK (action IN ('reconcile', 'chaos'))
+        CHECK (action IN ('reconcile', 'chaos', 'chaos_check'))
 );
 
 CREATE INDEX system_actions_action_started_idx ON system_actions (action, started_at DESC);
