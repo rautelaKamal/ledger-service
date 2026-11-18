@@ -43,7 +43,7 @@ test('2. send money, then the same request again: the second one moves nothing',
   await page.getByRole('button', { name: 'Send the same request again' }).click();
   await expect(page.getByText('Replayed, no new money moved')).toBeVisible();
   await expect(page.getByText('Idempotent-Replayed: true')).toBeVisible();
-  await page.getByText('The request and the response, as the server sent them').first().click();
+  await page.getByText('The first request and its response, as the server sent them').click();
   await expect(page.getByText(key).first()).toBeVisible();
   await expectAccessible(page);
 
@@ -67,6 +67,7 @@ for (const outcome of ['Approve', 'Decline'] as const) {
     const total = await totalBalance(page);
     await page.goto('/topup');
     await page.getByLabel('Amount in rupees').fill('2,500.00');
+    await page.getByLabel('To', { exact: true }).selectOption({ label: 'Shop' });
     await page.getByRole('button', { name: 'Request a ₹2,500.00 top-up' }).click();
     await expect(page.getByText(/202 Accepted. Nothing is credited yet/)).toBeVisible();
 
@@ -106,7 +107,7 @@ test('5. the assistant cites its sources and says whether it could verify', asyn
   await answer.getByRole('link', { name: 'source 1' }).click();
   await expect(answer.getByRole('complementary', { name: 'Sources' })).toBeVisible();
   await answer.getByText('How it answered').click();
-  await expect(answer.getByText(/Checked \d+ amounts in the answer against the fetched data: all found/)).toBeVisible();
+  await expect(answer.getByText(/Checked (the 1 amount|\d+ amounts) in the answer against the fetched data: (all )?found/)).toBeVisible();
   await expectAccessible(page);
 
   // The unverified state, as the real assistant could return it.

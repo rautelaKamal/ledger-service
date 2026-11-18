@@ -12,9 +12,10 @@
     "start": "next start --port 3200",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test:e2e": "playwright test",
-    "screenshots": "playwright test --project=screenshots",
-    "lighthouse": "node scripts/lighthouse.mjs"
+    "test:e2e": "playwright test --project=flows",
+    "screenshots": "playwright test --project=shots-desktop-light --project=shots-desktop-dark --project=shots-phone-light --project=shots-phone-dark",
+    "lighthouse": "playwright test --project=lighthouse",
+    "check:policies": "node scripts/check-policy-excerpts.mjs"
   },
   "dependencies": {
     "@tanstack/react-table": "9.3.1",

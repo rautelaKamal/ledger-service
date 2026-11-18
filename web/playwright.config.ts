@@ -29,6 +29,7 @@ export default defineConfig({
   use: { baseURL: WEB, trace: 'retain-on-failure', locale: 'en-IN', timezoneId: 'Asia/Kolkata' },
   projects: [
     { name: 'flows', testMatch: /flows\.spec\.ts/, use: { ...devices['Desktop Chrome'], viewport: { width: 1366, height: 900 } } },
+    { name: 'lighthouse', testMatch: /lighthouse\.spec\.ts/ },
     ...devicesMatrix.flatMap((d) =>
       themes.map((theme) => ({
         name: `shots-${d.name}-${theme}`,
