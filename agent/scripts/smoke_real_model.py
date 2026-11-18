@@ -14,8 +14,12 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import perf_counter
+from typing import Any
 
 import psycopg
+from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.embeddings import Embeddings
+from langchain_core.messages import BaseMessage
 from psycopg.rows import dict_row
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -80,6 +84,32 @@ def seed(owner_url: str) -> ClientContext:
     return ctx
 
 
+class CallCounter(BaseCallbackHandler):
+    """Counts chat-model calls (classify, each tool round, each answer)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def on_chat_model_start(self, serialized: dict[str, Any], messages: list[list[BaseMessage]], **kwargs: Any) -> None:
+        self.calls += 1
+
+
+class CountingEmbeddings(Embeddings):
+    """Delegates to the real embeddings and counts query embeddings (one API call each)."""
+
+    def __init__(self, inner: Embeddings) -> None:
+        self.inner = inner
+        self.calls = 0
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.calls += 1
+        return self.inner.embed_documents(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        self.calls += 1
+        return self.inner.embed_query(text)
+
+
 def main() -> int:
     settings = load_settings()
     if not settings.owner_database_url:
@@ -87,18 +117,34 @@ def main() -> int:
         return 1
     ctx = seed(settings.owner_database_url)
     pool = create_pool(settings.database_url, settings.pool_size)
+    counter = CallCounter()
+    chat = build_chat_model(settings)
+    chat.callbacks = [counter]
+    embeddings = CountingEmbeddings(build_embeddings(settings))
+    print(f"client {ctx.client_id} | model {settings.model} | embeddings {settings.embedding_model}")
     try:
-        assistant = Assistant(pool, settings, build_chat_model(settings), build_embeddings(settings))
-        for question in QUESTIONS:
-            started = perf_counter()
-            result = assistant.ask(ctx, question)
-            elapsed = perf_counter() - started
-            with pool.connection() as conn:
-                conn.execute("SELECT set_config('app.client_id', %s, true)", (ctx.client_id,))
-            print(f"\nQ: {question}\nA: {result.answer}")
-            print(f"   citations: {[(c.type, c.id) for c in result.citations]}")
-            print(f"   verified: {result.verified}   run_id: {result.run_id}   latency: {elapsed:.1f}s")
-        print(f"\ntokens per run: see agent_runs rows for client {ctx.client_id} (as ledger_owner)")
+        assistant = Assistant(pool, settings, chat, embeddings)
+        with psycopg.connect(settings.owner_database_url, row_factory=dict_row, autocommit=True) as owner:
+            for question in QUESTIONS:
+                chat_before, emb_before = counter.calls, embeddings.calls
+                started = perf_counter()
+                result = assistant.ask(ctx, question)
+                elapsed = perf_counter() - started
+                run = owner.execute("SELECT * FROM agent_runs WHERE id = %s", (result.run_id,)).fetchone()
+                assert run is not None
+                print(f"\nQ: {question}\nA: {result.answer}")
+                print(f"   citations: {[(c.type, c.id) for c in result.citations]}")
+                print(f"   verified: {result.verified}   run_id: {result.run_id}   latency: {elapsed:.1f}s")
+                print(
+                    f"   category: {run['category']}   attempts: {run['attempts']}"
+                    f"   verify failures: {run['verify_failures']}"
+                )
+                print(f"   tools: {[(t['name'], t['args'], t['ok']) for t in run['tools_called']]}")
+                print(f"   retrieved chunks: {run['retrieved_chunk_ids']}")
+                print(
+                    f"   model calls: {counter.calls - chat_before} chat + {embeddings.calls - emb_before} embedding"
+                    f"   tokens: {run['prompt_tokens']} in / {run['completion_tokens']} out"
+                )
     finally:
         pool.close()
     return 0

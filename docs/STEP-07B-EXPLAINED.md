@@ -231,7 +231,34 @@ limit and upstream failures, ingestion idempotency, one `agent_runs` row per que
 the polite refusal. Breakage checks: disabling the verifier fails 8 tests, the rate limit 1,
 widening the `agent_runs` insert policy 1, removing the unknown-argument refusal 1.
 
-The real-model smoke run is in the step's report.
+### The first run against the real model (18 Nov 2026, `scripts/smoke_real_model.py`)
+
+Ingestion: 43 chunks in one embedding request, 6.7 s. Then three questions for a seeded
+client with a ₹5,000.00 funding top-up, a ₹200.00 transfer out, and a pending ₹250.00 top-up:
+
+| question | answer | verified | model calls | tokens in / out | latency |
+|---|---|---|---|---|---|
+| Why is my balance lower than last week? | lower by ₹200.00 due to a posted transfer of ₹200.00 for rent share (cites the transaction) | yes, 1st attempt | 5 chat | 4,728 / 463 | 15.1 s |
+| Did my top-up go through? | the ₹250.00 top-up is currently pending (cites it) | yes, 1st attempt | 6 chat | 7,392 / 416 | 17.6 s |
+| How long do failed top-ups take to refund? | UPI and bank 1 to 3 business days, cards 5 to 7 (cites policy chunk 17) | yes, 1st attempt | 2 chat + 1 embedding | 1,181 / 116 | 8.3 s |
+
+What the real model did that the scripted fake never could:
+
+- **It ignored `temperature`.** `gemini-3.5-flash-lite` uses fixed sampling and warns on every
+  call; the code no longer passes it. The same question can come back worded differently,
+  which makes the code verifier more important, not less.
+- **It needs one extra round to stop.** After its last tool call, the model spends a round
+  saying "no more tools". Five calls for the first question = classify + three tool
+  rounds (two with tools, one to stop) + the answer. Every round resends the conversation so
+  far, so tokens grow with each tool: the second question used 7,392 input tokens.
+- **It chose a reasonable reading of "last week":** the seven days up to today in IST
+  (11 to 18 November), passed to the tool as dates, exactly as the prompt asks.
+- **It answered about the most recent top-up only.** The client also has an older,
+  posted one. That's defensible, but it's a judgement the verifier cannot check, because
+  nothing in the answer was wrong. It's a quality question for 7c's evaluations.
+- **The embedding model ignores `task_type`** (measured: identical vectors under two task
+  types), which the library sends anyway; the task is carried in the text prefixes, as
+  Google documents for `gemini-embedding-2`.
 
 ---
 
