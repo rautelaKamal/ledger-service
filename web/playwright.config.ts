@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { assertE2eDatabase } from './e2e/demo-db';
 
 // The whole stack, started by Playwright: ledger API (+ its internal port), outbox
 // worker, mock payment provider, and this web app (built first: `npm run build`).
@@ -11,6 +12,9 @@ const WEB = 'http://127.0.0.1:3200';
 const ci = Boolean(process.env.CI);
 const envFile = '--env-file-if-exists=.env.e2e.local';
 
+// Refuse to start the stack against anything but ledger_e2e (the eval reads `ledger`).
+assertE2eDatabase();
+
 const devicesMatrix = [
   { name: 'desktop', use: { viewport: { width: 1366, height: 900 } } },
   { name: 'phone', use: { ...devices['Pixel 7'] } },
@@ -19,6 +23,9 @@ const themes = ['light', 'dark'] as const;
 
 export default defineConfig({
   testDir: './e2e',
+  // Every run starts from the seed and leaves the demo as the seed made it.
+  globalSetup: './e2e/global-setup.ts',
+  globalTeardown: './e2e/global-teardown.ts',
   fullyParallel: false,
   workers: 1, // one shared ledger: flows run in order
   retries: 0,
