@@ -41,6 +41,8 @@ export interface Topup {
   createdAt: string;
   postedAt: string | null;
   providerPaymentId: string | null;
+  /** When the worker delivered the payment command to the provider (outbox sent_at). */
+  paymentSentAt: string | null;
   webhooks: Array<{ eventId: string; type: string; result: string; receivedAt: string }>;
 }
 

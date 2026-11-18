@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { become, expectAccessible, paiseOf, totalBalance } from './helpers';
+import { become, expectAccessible, optionStartingWith, paiseOf, totalBalance } from './helpers';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -33,7 +33,7 @@ test('2. send money, then the same request again: the second one moves nothing',
 
   await page.goto('/send');
   await expectAccessible(page);
-  await page.getByLabel('To', { exact: true }).selectOption({ label: 'Your Current' });
+  await page.getByLabel('To', { exact: true }).selectOption({ label: await optionStartingWith(page, 'Your Current') });
   await page.getByLabel('Amount in rupees').fill('1,234.50');
   const key = (await page.locator('code').first().innerText()).trim();
   await page.getByRole('button', { name: 'Send ₹1,234.50' }).click();
@@ -72,7 +72,7 @@ for (const outcome of ['Approve', 'Decline'] as const) {
     await expect(page.getByText(/202 Accepted. Nothing is credited yet/)).toBeVisible();
 
     // While it waits, it is in transit and NOT in the balance.
-    await expect(page.getByText(/The worker asked the payment provider/)).toBeVisible();
+    await expect(page.getByText(/\d{2}:\d{2}:\d{2} IST: the worker delivered the payment command/)).toBeVisible();
     await page.goto('/overview');
     await expect(page.getByText('top-up to Shop, waiting for the bank')).toBeVisible();
     expect(await totalBalance(page)).toBe(total);
@@ -188,4 +188,49 @@ test('8. an edited persona cookie is not accepted', async ({ page, context }) =>
   await page.goto('/overview');
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole('heading', { name: 'Pick someone to be.' })).toBeVisible();
+});
+
+test('9. fixes from browser testing: chart placeholder, quiet passbook, steady Send button, fresh balances, aligned fields', async ({ page, request, context }) => {
+  await become(page, 'Meera Iyer');
+
+  // The chart's box is filled from the very first byte: the server sends a same-size placeholder.
+  const cookie = (await context.cookies()).find((c) => c.name === 'demo_persona')!;
+  const html = await (await request.get('/overview', { headers: { cookie: `demo_persona=${cookie.value}` } })).text();
+  expect(html).toContain('Drawing the chart');
+
+  // A posted entry carries no visible status mark; only pending and failed rows do.
+  await page.goto('/overview');
+  const table = page.getByRole('table', { name: /Passbook/ });
+  await expect(table.getByText('Top-up, failed').first()).toBeVisible();
+  expect(await table.locator('td span:not(.sr-only)', { hasText: /^Posted$/ }).count()).toBe(0);
+
+  // Typing an amount never moves the Send button.
+  await page.goto('/send');
+  const button = page.getByRole('button', { name: /^Send/ });
+  const before = (await button.boundingBox())!.y;
+  await page.getByLabel('Amount in rupees').fill('12');
+  await expect(page.getByText('₹12.00', { exact: true })).toBeVisible();
+  expect((await button.boundingBox())!.y).toBe(before);
+
+  // Money moved in another tab: coming back to this one shows the new balance.
+  const from = page.getByLabel('From');
+  const shown = paiseOf((await from.locator('option').first().innerText()));
+  const other = await context.newPage();
+  await other.goto('/send');
+  await other.getByLabel('To', { exact: true }).selectOption({ label: await optionStartingWith(other, 'Your Current') });
+  await other.getByLabel('Amount in rupees').fill('10.00');
+  await other.getByRole('button', { name: 'Send ₹10.00' }).click();
+  await expect(other.getByText(/^Sent\./)).toBeVisible();
+  await other.close();
+  await page.bringToFront();
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect.poll(async () => paiseOf(await from.locator('option').first().innerText())).toBe(shown - 1_000n);
+
+  // The top-up form's labels and fields line up.
+  await page.goto('/topup');
+  const [amountLabel, toLabel] = [await page.getByText('Amount in rupees').boundingBox(), await page.getByText('To', { exact: true }).boundingBox()];
+  expect(Math.abs(amountLabel!.y - toLabel!.y)).toBeLessThan(1);
+  const [amountBox, toBox] = [await page.getByLabel('Amount in rupees').boundingBox(), await page.getByLabel('To', { exact: true }).boundingBox()];
+  expect(Math.abs(amountBox!.y - toBox!.y)).toBeLessThan(1);
+  expect(Math.abs(amountBox!.height - toBox!.height)).toBeLessThan(1);
 });

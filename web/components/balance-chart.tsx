@@ -1,5 +1,6 @@
 'use client';
 
+import { useSyncExternalStore } from 'react';
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts';
 import { ChartContainer, ChartTooltip, type ChartConfig } from '@/components/ui/chart';
 import { shortDay } from '@/lib/dates';
@@ -11,7 +12,24 @@ const config = { balance: { label: 'Balance', color: 'var(--ink)' } } satisfies 
 // Axis ticks in whole rupees with Indian grouping (₹1,20,000), never "1.2L".
 const tick = (rupees: number) => `₹${new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(rupees)}`;
 
+// True only in the browser after hydration: the server (and the first paint) gets the placeholder.
+const noop = () => () => {};
+const useHydrated = () => useSyncExternalStore(noop, () => true, () => false);
+
+/** Same box as the chart, with its ruled lines: nothing jumps when the chart arrives. */
+function ChartPlaceholder() {
+  return (
+    <div className="flex h-48 w-full flex-col justify-between pt-2 pb-8 pl-[92px] sm:h-56" role="status">
+      <span className="sr-only">Drawing the chart</span>
+      {Array.from({ length: 5 }, (_, i) => (
+        <span key={i} className="block h-px w-full bg-rule" aria-hidden />
+      ))}
+    </div>
+  );
+}
+
 export function BalanceChart({ days }: { days: BalanceDay[] }) {
+  const hydrated = useHydrated();
   const data = days.map((d) => ({ day: d.day, paise: d.balancePaise, balance: Number(BigInt(d.balancePaise) / 100n) }));
   const first = data[0];
   const last = data.at(-1);
@@ -26,7 +44,8 @@ export function BalanceChart({ days }: { days: BalanceDay[] }) {
           </span>
         ) : null}
       </figcaption>
-      <ChartContainer config={config} className="aspect-auto h-48 w-full sm:h-56" aria-hidden>
+      {!hydrated ? <ChartPlaceholder /> : null}
+      <ChartContainer config={config} className={hydrated ? 'aspect-auto h-48 w-full sm:h-56' : 'hidden'} aria-hidden>
         {/* Decorative for assistive tech (the caption says the start and end; the passbook has every amount), so not focusable either. */}
         <LineChart data={data} margin={{ left: 8, right: 8, top: 8, bottom: 0 }} accessibilityLayer={false}>
           <CartesianGrid vertical={false} stroke="var(--rule)" />

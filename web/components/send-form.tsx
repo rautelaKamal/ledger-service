@@ -2,7 +2,7 @@
 
 import { Copy, RefreshCw } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Money } from '@/components/money';
 import { Stamp } from '@/components/stamp';
 import { Button } from '@/components/ui/button';
@@ -29,7 +29,7 @@ const REASONS: Record<string, string> = {
   same_account: 'an account cannot send money to itself',
   idempotency_key_reused: 'this key was already used for a different request',
 };
-const selectClass = 'w-full rounded-md border border-input bg-surface px-3 py-2';
+const selectClass = 'h-10 w-full rounded-md border border-input bg-surface px-3';
 
 export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]; payees: Payee[]; initialKey: string }) {
   const router = useRouter();
@@ -45,6 +45,20 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
   const [error, setError] = useState<string | null>(null);
 
   const paise = parseRupees(amount);
+
+  // Balances in the From/To lists come from the server: fetch them again whenever
+  // this tab comes back into view (money may have moved elsewhere meanwhile).
+  useEffect(() => {
+    const onFocus = () => router.refresh();
+    const onVisible = () => document.visibilityState === 'visible' && router.refresh();
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [router]);
+
   const locked = first !== null; // after sending, the request is fixed: "again" must be the SAME request
   const fromAccount = accounts.find((a) => a.id === from);
   const accountName = (fromAccount?.name.split(', ').at(-1) ?? 'Account');
@@ -136,14 +150,17 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             disabled={locked}
-            className="money"
+            className="money h-10"
             aria-invalid={amount !== '' && !paise}
           />
-          {amount !== '' && paise ? <span className="text-sm text-ink-soft">{formatPaise(paise)}</span> : null}
+          {/* The line is always there (empty or not), so typing never moves the Send button. */}
+          <span className="min-h-5 text-sm text-ink-soft" aria-live="polite">
+            {amount === '' ? '\u00a0' : paise ? formatPaise(paise) : 'Rupees, for example 1,200.00'}
+          </span>
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${ids}-note`}>Note, optional</Label>
-          <Input id={`${ids}-note`} maxLength={140} placeholder="rent share" value={note} onChange={(e) => setNote(e.target.value)} disabled={locked} />
+          <Input id={`${ids}-note`} className="h-10" maxLength={140} placeholder="rent share" value={note} onChange={(e) => setNote(e.target.value)} disabled={locked} />
         </div>
 
         <div id={`${ids}-key`} className="flex flex-wrap items-center gap-x-3 gap-y-1 sm:col-span-2">
@@ -202,7 +219,10 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
                 disabled={busy}
                 onClick={async () => {
                   const r = await send();
-                  if (r) setReplay(r);
+                  if (r) {
+                    setReplay(r);
+                    router.refresh(); // show the (unchanged) balances as the ledger has them now
+                  }
                 }}
               >
                 {busy ? 'Sending again…' : 'Send the same request again'}

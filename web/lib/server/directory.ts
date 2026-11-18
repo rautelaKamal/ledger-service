@@ -1,4 +1,5 @@
 import 'server-only';
+import { formatPaise } from '@/lib/money';
 import { PERSONAS, type Persona } from '@/lib/personas';
 import { clientIdOf } from './identity';
 import { getAccounts } from './ledger';
@@ -20,7 +21,7 @@ export async function payeesFor(persona: Persona): Promise<Payee[]> {
     getAccounts('demo-merchants'),
   ]);
   return [
-    ...mine.map((a) => ({ id: a.id, label: `Your ${a.name.split(', ').at(-1)}`, group: 'Your accounts' as const })),
+    ...mine.map((a) => ({ id: a.id, label: `Your ${a.name.split(', ').at(-1)}, ${formatPaise(a.balancePaise)}`, group: 'Your accounts' as const })),
     ...people.flat().map((a) => ({ id: a.id, label: a.name, group: 'People' as const })),
     ...shops.map((a) => ({ id: a.id, label: a.name, group: 'Shops' as const })),
   ];
