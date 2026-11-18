@@ -37,12 +37,19 @@ target-version = "py312"
 select = ["E", "F", "I", "B", "UP", "N", "SIM", "RUF", "ANN"]
 ignore = ["ANN401"]
 
+[tool.ruff.lint.per-file-ignores]
+# Data tables: one eval item or seed row per line reads better than wrapped literals.
+"eval/questions.py" = ["E501"]
+"eval/seed.py" = ["E501"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
-files = ["ledger_agent", "tests", "scripts"]
+files = ["ledger_agent", "tests", "scripts", "eval"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Any LangSmith call to a deprecated endpoint (removed after 31 Jan 2027) fails the test that made it.
+filterwarnings = ["error:.*is deprecated and will be removed after:DeprecationWarning"]
