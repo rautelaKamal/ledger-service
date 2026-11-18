@@ -32,9 +32,9 @@ from .db import ClientContext, client_scope
 from .llm import UpstreamModelError
 from .prompts import (
     ANSWER_INSTRUCTIONS,
-    CLASSIFY_INSTRUCTIONS,
     FALLBACK_TEXT,
     REFUSAL_TEXT,
+    classify_instructions,
     feedback_block,
     system_prompt,
     wrap_policy,
@@ -50,8 +50,9 @@ Category = Literal["account", "policy", "both", "out_of_scope"]
 PREFETCH = "prefetch"  # the client's accounts (and totals per currency) fetched by code, not by a model round
 ANSWER_TOOL = "answer_tool"  # the model submits its answer as a tool call: no 'done with tools' round, no answer call
 COMPACT = "compact"  # tool output without indentation or empty fields, at most 20 transactions
-TOPUPS = "topups"  # list_my_topups across all accounts, and 'cover every item in the period'
-FEATURES = (PREFETCH, ANSWER_TOOL, COMPACT, TOPUPS)
+TOPUPS = "topups"  # list_my_topups across all accounts, 'cover every item in the period', state every amount
+CLASSIFY = "classify"  # two hints for the classifier: transfers naming the other party; 'can I ...?' is both
+FEATURES = (PREFETCH, ANSWER_TOOL, COMPACT, TOPUPS, CLASSIFY)
 MAX_TOOL_CALLS = 4
 MAX_ATTEMPTS = 2
 
@@ -334,7 +335,10 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
 
     def classify(state: State) -> State:
         parsed = _structured(
-            deps, run, Classification, [system, HumanMessage(f"{CLASSIFY_INSTRUCTIONS}\nQuestion: {state['question']}")]
+            deps,
+            run,
+            Classification,
+            [system, HumanMessage(f"{classify_instructions(features)}\nQuestion: {state['question']}")],
         )
         return {"category": cast(Classification, parsed).category}
 

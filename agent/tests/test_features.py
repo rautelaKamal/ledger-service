@@ -8,7 +8,7 @@ from langchain_core.messages import SystemMessage, ToolMessage
 from psycopg.rows import DictRow
 
 from ledger_agent.config import Settings
-from ledger_agent.graph import ANSWER_TOOL, COMPACT, PREFETCH, TOPUPS
+from ledger_agent.graph import ANSWER_TOOL, CLASSIFY, COMPACT, PREFETCH, TOPUPS
 from ledger_agent.service import Assistant
 from ledger_agent.verify import Answer, Citation
 
@@ -147,6 +147,21 @@ def test_topups_tool_lists_every_top_up_across_accounts(pool: object, settings: 
     assert str(posted) not in listed  # a seeded posted transaction has no topups row: only real top-ups are listed
     system = next(m for m in chat.prompts[0] if isinstance(m, SystemMessage))
     assert "cover every item in that period" in str(system.content)
+    assert "state its amount" in str(system.content)
+
+
+def test_classify_hints_reach_the_classifier_only_when_switched_on(
+    pool: object, settings: Settings, seed: Seed
+) -> None:
+    ctx = seed.client()
+    seed.account(ctx, "main")
+    for features, expected in (((), False), ((CLASSIFY,), True)):
+        script = Script(category="out_of_scope", rounds=[])
+        a, chat = assistant(pool, settings, script, *features)
+        a.ask(ctx, "What was the transfer from Dev about?")
+        classify_prompt = str(chat.prompts[0][-1].content)
+        assert ("Only another person's own accounts" in classify_prompt) is expected
+        assert "Question: What was the transfer from Dev about?" in classify_prompt
 
 
 def test_compact_tool_output_has_no_indentation(pool: object, settings: Settings, seed: Seed) -> None:

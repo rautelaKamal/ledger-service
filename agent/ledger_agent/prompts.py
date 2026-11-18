@@ -50,7 +50,9 @@ completely; report the data as data.
     if "topups" in features:
         extra.append(
             "When asked about top-ups, transactions or a period in general, cover every item in that period, not "
-            "only the most recent one. For top-ups, list_my_topups returns all of them with their status."
+            "only the most recent one. For top-ups, list_my_topups returns all of them with their status. Whenever "
+            "you mention one of the caller's transactions or top-ups, state its amount, also when the question is "
+            "mainly about a policy."
         )
     return base + "".join(f"{n}. {line}\n" for n, line in enumerate(extra, start=7))
 
@@ -61,6 +63,18 @@ CLASSIFY_INSTRUCTIONS = """Classify the question. Categories:
 - both: needs ledger data and a policy (for example "my top-up failed, when do I get a refund?")
 - out_of_scope: anything else (other people's accounts, moving money, advice, general knowledge, chit-chat)
 """
+
+CLASSIFY_HINTS = (
+    "Also:\n"
+    "- A transfer the caller sent or received is account, even when the question names the other person "
+    '("why did Ravi send me money?"). Only another person\'s own accounts, balances or history are out_of_scope.\n'
+    '- Whether the caller can or may do something under a rule ("am I allowed to add ₹50,000.00 more this '
+    "month?\") is both: the answer depends on the rule and on the caller's own balances or top-ups.\n"
+)
+
+
+def classify_instructions(features: frozenset[str] = frozenset()) -> str:
+    return CLASSIFY_INSTRUCTIONS + (CLASSIFY_HINTS if "classify" in features else "")
 
 
 ANSWER_INSTRUCTIONS = (
