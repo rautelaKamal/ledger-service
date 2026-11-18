@@ -160,7 +160,17 @@ clicks and keep state; they are shipped as JavaScript).
 in light and dark; Lighthouse accessibility **100** on all six screens, phone and desktop
 (the requirement was 95).
 
-## 6. Running it
+## 6. Two TypeScripts, on purpose
+
+TypeScript 7 is the native compiler and ships without a programmatic API (one is planned for
+7.1). typescript-eslint, which the Next.js lint rules depend on, needs that API. So `web/`
+follows the TypeScript team's documented side-by-side setup: `tsc` is 7.0.2 (installed as
+`@typescript/native`), and anything that does `require('typescript')` gets the TypeScript 6
+API through Microsoft's compatibility package `@typescript/typescript6` (6.0.2, which itself
+brings TypeScript 6.0.3). Both are pinned; `npm run typecheck` is TypeScript 7,
+`npm run lint` uses the 6 API. When typescript-eslint supports 7.1, the alias goes away.
+
+## 7. Running it
 
 ```bash
 npm run migrate && npm run seed:demo            # the ledger and the demo people
@@ -171,7 +181,7 @@ npm run lighthouse                              # fails below 95
 docker compose -f docker-compose.full.yml up -d web   # http://localhost:3200
 ```
 
-## 7. Questions
+## 8. Questions
 
 1. The cookie contains `meera.<signature>`, not the client id. What would an attacker be able to
    do if it contained `demo-meera` unsigned, and which part of the ledger would still stop them?

@@ -140,8 +140,11 @@ jobs:
       - name: Policy excerpts match agent/policies word for word
         run: npm run check:policies
         working-directory: web
-      - name: Typecheck
+      - name: Typecheck (TypeScript 7)
         run: npm run typecheck
+        working-directory: web
+      - name: Lint (typescript-eslint, on the TypeScript 6 API; no warnings allowed)
+        run: npm run lint
         working-directory: web
       - name: Build
         run: npx next build
