@@ -1,0 +1,58 @@
+# Embed agent/policies/*.md into policy_chunks (scripts/ingest_policies.py), as
+# ledger_owner. Idempotent by content hash: when nothing changed it makes no
+# model call at all. scripts/k8s/deploy.sh runs it right after the migrate Job
+# (it needs migration 009's table), deleting the previous one first.
+#
+# A separate Job, not the agent: the long-running agent never holds the
+# owner's credentials.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agent-ingest
+  labels:
+    app: agent-ingest
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: agent-ingest
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ingest
+          image: ledger-agent
+          imagePullPolicy: IfNotPresent
+          command: ["python", "scripts/ingest_policies.py"]
+          envFrom:
+            - configMapRef:
+                name: agent-config
+          env:
+            - name: AGENT_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: ledger-secrets, key: AGENT_DATABASE_URL } }
+            - name: OWNER_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: ledger-secrets, key: OWNER_DATABASE_URL } }
+            - name: GOOGLE_API_KEY
+              valueFrom: { secretKeyRef: { name: agent-secrets, key: GOOGLE_API_KEY } }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 384Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi

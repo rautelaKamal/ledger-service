@@ -1,0 +1,7 @@
+# On demand: embed the policy documents (scripts/k8s/deploy.sh, after migrations).
+# Apply through an overlay (k8s/overlays/kind/agent-ingest) so the image tag is set.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ledger
+resources:
+  - job.yaml
