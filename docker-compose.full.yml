@@ -80,6 +80,9 @@ services:
       # Prometheus (on the compose network) scrapes it.
       METRICS_PORT: "9100"
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-local-compose-webhook-secret-not-for-production}
+      # Step 7d: /system/status, reconcile-now and the chaos slot on the internal
+      # port read and record as ledger_reconciler (never as the API's own role).
+      RECONCILER_DATABASE_URL: *reconciler-url
       SERVICE_NAME: api
       LOG_LEVEL: info
     ports:
@@ -254,6 +257,39 @@ services:
     restart: unless-stopped
     mem_limit: 256m
 
+  # Step 7d: the web app. The browser talks ONLY to this server; it adds
+  # X-Client-Id and calls the API (public and internal ports), the assistant and
+  # the mock provider on the compose network. http://localhost:3200
+  web:
+    image: ledger-web:local
+    build:
+      context: ./web
+    environment:
+      LEDGER_API_URL: http://api:3000
+      LEDGER_INTERNAL_URL: http://api:9100
+      AGENT_URL: http://agent:8000
+      PROVIDER_URL: http://mock-provider:4100
+      GRAFANA_URL: http://localhost:3001
+      PROMETHEUS_URL: http://localhost:9090/targets
+      # 'fixtures' (default): a script answers from live data, no model call.
+      # 'agent': the real assistant (spends the Gemini quota; needs GOOGLE_API_KEY).
+      ASSISTANT_MODE: ${ASSISTANT_MODE:-fixtures}
+      SESSION_SECRET: ${WEB_SESSION_SECRET:-local-compose-session-secret-not-for-production}
+      # No RECONCILE_SCHEDULE: nothing runs reconciliation on a schedule in compose,
+      # so the pages do not claim that anything does.
+    ports:
+      - "3200:3200"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3200/api/healthz >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+    mem_limit: 256m
+
   # ── On-demand tools ──
 
   reconcile:
@@ -275,6 +311,20 @@ services:
     environment:
       OWNER_DATABASE_URL: *owner-url
       LOAD_ACCOUNTS: "10"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+    mem_limit: 128m
+
+  # The web demo's fictional people (step 7d), once:
+  #   docker compose -f docker-compose.full.yml run --rm seed-demo
+  seed-demo:
+    <<: *ledger-image
+    profiles: ["tools"]
+    command: ["node", "dist/scripts/seed-demo.js"]
+    environment:
+      OWNER_DATABASE_URL: *owner-url
     depends_on:
       migrate:
         condition: service_completed_successfully

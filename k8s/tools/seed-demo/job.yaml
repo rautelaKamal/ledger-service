@@ -1,0 +1,39 @@
+# The web demo's fictional people (scripts/seed-demo.ts), as ledger_owner. Does
+# nothing when they already exist. scripts/k8s/deploy.sh runs it after migrate.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-demo
+  labels:
+    app: seed-demo
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: seed-demo
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: seed-demo
+          image: ledger-service
+          imagePullPolicy: IfNotPresent
+          command: ["node", "dist/scripts/seed-demo.js"]
+          env:
+            - name: OWNER_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: ledger-secrets, key: OWNER_DATABASE_URL } }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

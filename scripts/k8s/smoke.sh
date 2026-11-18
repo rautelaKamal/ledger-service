@@ -7,13 +7,16 @@
 #      then a top-up (202) that the mock provider confirms and the webhook posts
 #   4. the public port serves no /metrics; Prometheus sees every target up
 #   5. the NetworkPolicy really blocks the metrics ports from a non-Prometheus pod
-#   6. a reconcile Job runs now and finds 0 problems
+#   6. the web app: pages render, its server reaches the API's internal port,
+#      and its egress is fenced (no database)
+#   7. a reconcile Job runs now and finds 0 problems
 source "$(dirname "$0")/lib.sh"
 need curl; need python3
 
 API_PORT=${API_PORT:-18080}
 PROVIDER_PORT=${PROVIDER_PORT:-18100}
 PROMETHEUS_PORT=${PROMETHEUS_PORT:-19090}
+WEB_PORT=${WEB_PORT:-13200}
 pids=()
 cleanup() { for p in ${pids[@]+"${pids[@]}"}; do kill "$p" 2>/dev/null || true; done; }
 trap cleanup EXIT
@@ -107,7 +110,26 @@ pass "mock-provider -> api:3000           allowed (the product)"
 # The positive control: Prometheus itself scrapes those ports (every target was "up" in step 4).
 pass "prometheus     -> api-metrics:9100   allowed (its scrapes succeed, step 4)"
 
-log "6. reconciliation"
+log "6. the web app"
+pids+=("$(port_forward web "$WEB_PORT" 3200 /api/healthz)")
+WEB=http://127.0.0.1:$WEB_PORT
+curl -fsS "$WEB/" | grep -q 'Pick someone to be' || die "web: the persona picker did not render"
+jar=$(mktemp)
+curl -fsS -c "$jar" -o /dev/null -X POST -d persona=meera "$WEB/api/session"
+grep -q demo_persona "$jar" || die "web: no persona cookie was set"
+grep -q 'demo-meera' "$jar" && die "web: a client id reached the browser's cookie"
+curl -fsS -b "$jar" "$WEB/overview" | grep -q 'Meera' || die "web: the overview did not render"
+pass "web: picker, persona cookie (no client id in it), overview"
+curl -fsS -b "$jar" "$WEB/api/system" | grep -q '"lanes"' || die "web: /system status did not come through the API's internal port"
+pass "web -> api-metrics:9100 /system/status   allowed"
+rm -f "$jar"
+tcp() { kc exec deploy/web -- node -e "const s=require('net').connect($2,'$1');s.setTimeout(3000);s.on('connect',()=>process.exit(0));s.on('timeout',()=>process.exit(1));s.on('error',()=>process.exit(1))"; }
+tcp api 3000 || die "web -> api:3000 blocked"
+pass "web -> api:3000                         allowed"
+if tcp postgres 5432; then die "web -> postgres:5432 reachable: the web app must not touch the database"; fi
+pass "web -> postgres:5432                    blocked"
+
+log "7. reconciliation"
 scripts/k8s/reconcile-now.sh | tail -12
 
 log "smoke test passed"

@@ -9,5 +9,5 @@
     "sourceMap": false,
     "declaration": false
   },
-  "include": ["src", "scripts/migrate.ts", "scripts/seed-load.ts", "mock-provider"]
+  "include": ["src", "scripts/migrate.ts", "scripts/seed-load.ts", "scripts/seed-demo.ts", "mock-provider"]
 }

@@ -70,19 +70,97 @@ jobs:
       - name: Build the mock provider image (no push)
         run: docker build --target mock-provider -t ledger-mock-provider:ci .
 
+      - name: Build the web image (no push)
+        run: docker build -t ledger-web:ci web/
+
       - name: Smoke-check the images
         run: |
           set -eu
-          # Both run as the non-root `node` user.
+          # All run as the non-root `node` user.
           test "$(docker run --rm --entrypoint id ledger-service:ci -u)" = "1000"
           test "$(docker run --rm --entrypoint id ledger-mock-provider:ci -u)" = "1000"
-          # No env files made it into either image.
-          for img in ledger-service:ci ledger-mock-provider:ci; do
+          test "$(docker run --rm --entrypoint id ledger-web:ci -u)" = "1000"
+          # No env files made it into any image.
+          for img in ledger-service:ci ledger-mock-provider:ci ledger-web:ci; do
             found=$(docker run --rm --user root --entrypoint sh "$img" -c 'find / -xdev -name ".env*" 2>/dev/null | grep -v "^/proc" || true')
             test -z "$found" || { echo "env file in $img: $found"; exit 1; }
           done
           # The compiled entry points load with only production dependencies.
           docker run --rm --entrypoint node ledger-service:ci --input-type=module -e "await import('/app/dist/src/app.js'); await import('/app/dist/src/worker/handlers.js'); await import('/app/dist/src/reconcile/run.js'); console.log('modules load')"
+
+  # The web app (web/): types, build, and Playwright against the real stack
+  # (API, worker, mock provider, started by Playwright) on a fresh database with
+  # the demo people: the flows, Lighthouse accessibility, and every screen in
+  # both themes through axe. The assistant runs in 'fixtures' mode: no model call.
+  web:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres # throwaway CI-only container
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      CI: "true"
+      DATABASE_URL: postgres://ledger_app:ledger_app_local@localhost:5432/ledger
+      OWNER_DATABASE_URL: postgres://ledger_owner:ledger_owner_local@localhost:5432/ledger
+      WORKER_DATABASE_URL: postgres://ledger_worker:ledger_worker_local@localhost:5432/ledger
+      RECONCILER_DATABASE_URL: postgres://ledger_reconciler:ledger_reconciler_local@localhost:5432/ledger
+      WEBHOOK_SECRET: ci-webhook-secret-not-for-production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+
+      - name: Install the ledger's dependencies (API, worker, mock provider)
+        run: npm ci
+      - name: Create roles and databases (as postgres superuser)
+        env:
+          PGPASSWORD: postgres
+        run: psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d postgres -f k8s/base/postgres/init/00-roles.sql
+      - name: Migrate and seed the demo people
+        run: npm run migrate && npm run seed:demo
+
+      - name: Install the web app's dependencies
+        run: npm ci
+        working-directory: web
+      - name: Policy excerpts match agent/policies word for word
+        run: npm run check:policies
+        working-directory: web
+      - name: Typecheck (TypeScript 7)
+        run: npm run typecheck
+        working-directory: web
+      - name: Lint (typescript-eslint, on the TypeScript 6 API; no warnings allowed)
+        run: npm run lint
+        working-directory: web
+      - name: Build
+        run: npx next build
+        working-directory: web
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+      - name: Playwright (flows, Lighthouse, every screen through axe)
+        run: npx playwright test
+        working-directory: web
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: web/playwright-report
+          retention-days: 7
 
   # The assistant service (agent/): lint, format, types, and its tests against
   # the real, migrated database as ledger_agent.

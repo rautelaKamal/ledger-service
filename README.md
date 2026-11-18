@@ -217,6 +217,30 @@ volume created before step 7b lacks pgvector: run the roles file once against it
 (`docker compose -f docker-compose.full.yml exec -T postgres psql -U postgres -d postgres -f - < k8s/base/postgres/init/00-roles.sql`).
 See [docs/STEP-07B-EXPLAINED.md](docs/STEP-07B-EXPLAINED.md).
 
+## The web app (`web/`, step 7d)
+
+A demo front end for recruiters and engineers: pick a fictional person, see their passbook,
+send money and then the same request again (it moves nothing), follow a top-up from
+"202 Accepted" to the signed webhook, ask the assistant, and run 200 concurrent transfers
+followed by reconciliation. The browser only talks to the Next.js server, which adds
+`X-Client-Id` itself; client ids and internal URLs never reach the page.
+
+![Overview](docs/images/web/2-overview-desktop-light.png)
+
+```bash
+npm run seed:demo                     # the demo people (as ledger_owner, idempotent)
+cd web && npm ci && npx next build
+npx playwright test --project=flows   # starts the API, worker, mock provider and web itself
+npm run screenshots                   # docs/images/web/, desktop + phone, light + dark
+npm run lighthouse                    # accessibility, fails below 95
+```
+
+Compose: `docker compose -f docker-compose.full.yml run --rm seed-demo`, then
+`docker compose -f docker-compose.full.yml up -d web`, then open http://localhost:3200.
+The assistant page runs a script over the person's live data by default
+(`ASSISTANT_MODE=fixtures`, no model call); `ASSISTANT_MODE=agent` uses the real assistant.
+See [docs/STEP-07D-EXPLAINED.md](docs/STEP-07D-EXPLAINED.md).
+
 ## Run it on Kubernetes (locally, with kind)
 
 The same images on a one-node Kubernetes cluster inside Docker. Needs `kubectl`, `kind`

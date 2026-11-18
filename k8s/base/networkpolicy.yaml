@@ -26,6 +26,10 @@ spec:
         - podSelector:
             matchLabels:
               app: prometheus
+        # Step 7d: the web app's "under the hood" page reads /system/* here.
+        - podSelector:
+            matchLabels:
+              app: web
       ports:
         - port: metrics
           protocol: TCP

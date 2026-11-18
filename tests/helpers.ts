@@ -119,7 +119,8 @@ export async function commitBalancedTransaction(
  * system account 'bank_settlement' (created on first use, per currency).
  * Runs as ledger_owner. Convention: credit increases a balance, debit decreases it.
  */
-export async function fundAccount(owner: Pool, accountId: string, amountPaise: bigint): Promise<void> {
+/** `daysAgo` back-dates the transaction's created_at: only possible at insert (posted transactions are immutable). */
+export async function fundAccount(owner: Pool, accountId: string, amountPaise: bigint, daysAgo = 0): Promise<void> {
   await withCommit(owner, async (db) => {
     const { rows } = await db.query<{ currency: string }>('SELECT currency FROM accounts WHERE id = $1', [accountId]);
     const currency = rows[0]!.currency;
@@ -130,7 +131,15 @@ export async function fundAccount(owner: Pool, accountId: string, amountPaise: b
     );
     const bankId = existing.rows[0]?.id ?? (await createAccount(db, 'system', currency, 'bank_settlement'));
 
-    const transactionId = await createTransaction(db, 'topup');
+    const transactionId =
+      daysAgo === 0
+        ? await createTransaction(db, 'topup')
+        : (
+            await db.query<{ id: string }>(
+              `INSERT INTO transactions (kind, created_at) VALUES ('topup', now() - make_interval(days => $1)) RETURNING id`,
+              [daysAgo],
+            )
+          ).rows[0]!.id;
     await insertEntry(db, { transactionId, accountId: bankId, currency, direction: 'debit', amountPaise });
     await insertEntry(db, { transactionId, accountId, currency, direction: 'credit', amountPaise });
     await db.query('UPDATE accounts SET balance_paise = balance_paise - $2 WHERE id = $1', [bankId, amountPaise]);
