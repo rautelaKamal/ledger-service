@@ -13,7 +13,7 @@ from psycopg.rows import DictRow
 
 from eval.instrument import Meter, Throttle
 from eval.questions import ITEMS, ITEMS_BY_ID, SUBSET, Expect
-from eval.run import estimate, load_done, plan, run_one
+from eval.run import estimate, load_done, load_label, plan, run_one
 from eval.score import score
 from eval.seed import ACCOUNTS, CLIENTS, EVAL_NOW, seed
 from eval.truth import Truth
@@ -279,3 +279,16 @@ def test_trace_latency_attributes_model_tool_and_our_code() -> None:
     (w,) = split_traces(runs, {("b1", 1): 2.0})
     assert (w.total, w.model) == (8.0, 5.5) and abs(w.own - 2.2) < 1e-9
     assert split_traces(runs, {}) == []  # no recorded wait for this (item, rep): skipped
+
+
+def test_subset_view_of_a_full_run_is_the_subset_items_at_reps_one_and_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("eval.run.RESULTS_DIR", tmp_path)
+    lines = [json.dumps({"item": i.id, "rep": rep, "status": "ok"}) for i in ITEMS for rep in (1, 2, 3)]
+    (tmp_path / "full.jsonl").write_text("\n".join(lines))
+    view = load_label("full@subset")
+    assert len(load_label("full")) == 150 and len(view) == 40
+    assert {r["item"] for r in view} == {i.id for i in SUBSET} and {r["rep"] for r in view} == {1, 2}
+    with pytest.raises(SystemExit):
+        load_label("full@other")

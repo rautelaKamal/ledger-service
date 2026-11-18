@@ -31,7 +31,7 @@ from langsmith.types.run_select_field import RunSelectField
 
 from ledger_agent.config import apply_tracing_env
 
-from .run import RESULTS_DIR, load_done
+from .run import load_label
 
 MODEL_TYPES = {"llm", "embedding"}
 TOOL_TYPES = {"tool", "retriever"}
@@ -108,7 +108,8 @@ async def fetch_runs(label: str) -> list[Any]:
 
     client = Client()
     project = await client.aread_project(project_name=os.environ["LANGSMITH_PROJECT"])
-    records = load_done(RESULTS_DIR / f"{label}.jsonl").values()
+    records = load_label(label)
+    tag = label.partition("@")[0]  # a view (baseline@subset) reads the traces of its run
     starts = [datetime.fromisoformat(r["started_at"]) for r in records if "started_at" in r]
     since = (min(starts) if starts else datetime.now(UTC)) - timedelta(minutes=5)
     runs: list[Any] = []
@@ -116,7 +117,7 @@ async def fetch_runs(label: str) -> list[Any]:
     async for r in client.runs.query(
         project_ids=[str(project.id)],
         min_start_time=since,
-        trace_filter=f'and(has(tags, "eval"), has(tags, "{label}"))',
+        trace_filter=f'and(has(tags, "eval"), has(tags, "{tag}"))',
         selects=SELECTS,
     ):
         runs.append(r)
@@ -155,7 +156,7 @@ def main(argv: list[str]) -> int:
         print("LANGSMITH_API_KEY is not set: no traces to read. eval/report.py gives the same split from local timers.")
         return 0
     for label in argv:
-        records = load_done(RESULTS_DIR / f"{label}.jsonl").values()
+        records = load_label(label)
         waits = {
             (r["item"], r["rep"]): float(r["wait_s"]) for r in records if r.get("status") == "ok" and "wait_s" in r
         }

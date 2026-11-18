@@ -83,6 +83,22 @@ def load_done(path: Path) -> dict[tuple[str, int], dict[str, Any]]:
     return done
 
 
+SUBSET_SUFFIX = "@subset"
+
+
+def load_label(label: str) -> list[dict[str, Any]]:
+    """A run's records by label. "<label>@subset" is that run restricted to the subset items at reps 1 and 2:
+    the shape of a per-change run, so a full run with no features doubles as the 'before' of a subset run."""
+    base, _, view = label.partition("@")
+    records = list(load_done(RESULTS_DIR / f"{base}.jsonl").values())
+    if not view:
+        return records
+    if f"@{view}" != SUBSET_SUFFIX:
+        raise SystemExit(f"unknown view @{view}; known: {SUBSET_SUFFIX}")
+    subset = {i.id for i in SUBSET}
+    return [r for r in records if r["item"] in subset and r["rep"] <= 2]
+
+
 def backoff_delays(rng: random.Random) -> list[float]:
     """30, 60, 120 s, each with up to +20 % jitter so parallel runners do not retry in lock-step."""
     return [b * (1 + 0.2 * rng.random()) for b in BACKOFF_S]

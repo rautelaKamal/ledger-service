@@ -2,6 +2,7 @@
 
 uv run python -m eval.report baseline
 uv run python -m eval.report baseline e1-prefetch          # before / after
+uv run python -m eval.report baseline@subset e1-prefetch   # the baseline's subset items, reps 1-2
 """
 
 import statistics
@@ -9,7 +10,7 @@ import sys
 from collections import defaultdict
 from typing import Any
 
-from .run import RESULTS_DIR, load_done
+from .run import load_label
 
 CATEGORIES = (
     "balance",
@@ -33,7 +34,7 @@ def pct(values: list[float], q: float) -> float:
 
 
 def summarize(label: str) -> dict[str, Any]:
-    records = list(load_done(RESULTS_DIR / f"{label}.jsonl").values())
+    records = load_label(label)
     ok = [r for r in records if r["status"] == "ok"]
     by_cat: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in ok:
