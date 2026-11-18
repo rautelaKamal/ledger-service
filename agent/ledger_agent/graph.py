@@ -19,8 +19,10 @@ import psycopg
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.graph import END, START, StateGraph
+from langsmith import traceable
 from psycopg.rows import DictRow
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, ConfigDict, Field
@@ -276,11 +278,19 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
                 break
         return {"transcript": messages[2:]}
 
-    def retrieve(state: State) -> State:
-        vector = _invoke_model(lambda: deps.embeddings.embed_query(query_text(state["question"])))
+    # Traced as their own spans (no-ops when tracing is off), so a trace shows
+    # where retrieval time goes: the embedding API call vs the vector search.
+    @traceable(run_type="embedding", name="embed_question")
+    def embed_question(question: str) -> list[float]:
+        return cast(list[float], _invoke_model(lambda: deps.embeddings.embed_query(query_text(question))))
+
+    @traceable(run_type="retriever", name="policy_search")
+    def policy_search(vector: list[float]) -> list[RetrievedChunk]:
         with client_scope(deps.pool, deps.ctx) as conn:
-            chunks = search(conn, vector)
-        return {"retrieved": chunks}
+            return search(conn, vector)
+
+    def retrieve(state: State) -> State:
+        return {"retrieved": policy_search(embed_question(state["question"]))}
 
     def answer(state: State) -> State:
         parts: list[str] = [ANSWER_INSTRUCTIONS]
@@ -340,9 +350,11 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
     return graph.compile()
 
 
-def run_question(deps: Deps, question: str) -> Outcome:
+def run_question(deps: Deps, question: str, config: RunnableConfig | None = None) -> Outcome:
+    """config: run name, tags and metadata for the trace (the eval tags each item); never affects behaviour."""
     run = RunContext()
-    final = cast(State, build_graph(deps, run).invoke({"question": question, "attempts": 0, "failures": []}))
+    initial: State = {"question": question, "attempts": 0, "failures": []}
+    final = cast(State, build_graph(deps, run).invoke(initial, config=config))
     return Outcome(
         answer=final["final_answer"],
         citations=list(final.get("final_citations") or []),

@@ -8,6 +8,7 @@ from time import perf_counter
 import psycopg
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import RunnableConfig
 from psycopg.rows import DictRow
 from psycopg_pool import ConnectionPool
 
@@ -36,15 +37,17 @@ class Assistant:
         chat: BaseChatModel,
         embeddings: Embeddings,
         now_fn: Callable[[], datetime] = now_utc,
+        ledger: LedgerTools | None = None,
     ) -> None:
         self._pool = pool
         self._settings = settings
         self._chat = chat
         self._embeddings = embeddings
         self._now = now_fn
-        self._ledger = LedgerTools(pool)
+        # Injectable so the eval can time the tools; always the same read-only tools.
+        self._ledger = ledger or LedgerTools(pool)
 
-    def ask(self, ctx: ClientContext, question: str) -> AskResult:
+    def ask(self, ctx: ClientContext, question: str, trace: RunnableConfig | None = None) -> AskResult:
         # 1. The cap, BEFORE any model call: a client over the limit costs nothing upstream.
         with client_scope(self._pool, ctx) as conn:
             asked = questions_in_window(conn)
@@ -64,6 +67,7 @@ class Assistant:
                 now=self._now(),
             ),
             question,
+            trace,
         )
         latency_ms = int((perf_counter() - started) * 1000)
 
