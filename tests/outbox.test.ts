@@ -222,17 +222,16 @@ describe('transactional outbox and worker', () => {
     sink.delayMs = 30;
     const a = makeWorker({ sink });
     const b = makeWorker({ sink });
-    const started = Date.now();
     await Promise.all([a.worker.tick(20), b.worker.tick(20)]);
-    const elapsed = Date.now() - started;
 
     expect(sink.deliveries).toHaveLength(20);
     expect(new Set(sink.deliveries).size).toBe(20); // every row delivered exactly once
     // SKIP LOCKED is what makes them concurrent: a worker never waits for a row the
     // other one holds, so two deliveries are in flight at once. With plain FOR UPDATE
-    // they would take turns (maxInFlight 1, ~20 x 30 ms).
+    // they would take turns (maxInFlight 1). This is the concurrency proof; there is
+    // deliberately no wall-clock bound: "faster than 480 ms" measured how busy the
+    // machine was (it failed whenever Docker's VM was saturated), not the locking.
     expect(sink.maxInFlight).toBe(2);
-    expect(elapsed).toBeLessThan(20 * 30 * 0.8);
     expect(await outboxRows(...tagged(tag, `status <> 'sent'`))).toEqual([]);
   });
 
