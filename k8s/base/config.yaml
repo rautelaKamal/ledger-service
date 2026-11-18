@@ -35,3 +35,22 @@ metadata:
 data:
   PROVIDER_PORT: "4100"
   LEDGER_WEBHOOK_URL: http://api:3000/webhooks/provider
+---
+# The web app (step 7d). URLs are cluster DNS names; the browser never sees them.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-config
+data:
+  PORT: "3200"
+  HOSTNAME: 0.0.0.0
+  LEDGER_API_URL: http://api:3000
+  LEDGER_INTERNAL_URL: http://api-metrics:9100
+  AGENT_URL: http://agent:8000
+  PROVIDER_URL: http://mock-provider:4100
+  # 'fixtures': a script answers from live data, no model call. Switch an overlay
+  # to 'agent' once the assistant (step 7c) is deployed there and the quota allows.
+  ASSISTANT_MODE: fixtures
+  # True here, and only here: reconcile-cronjob.yaml runs "0 2 * * *" in Asia/Kolkata.
+  # Keep the two in step; compose sets no schedule because it has no such job.
+  RECONCILE_SCHEDULE: every night at 02:00 IST

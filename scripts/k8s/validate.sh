@@ -24,6 +24,7 @@ check() {
 check k8s/base
 check k8s/overlays/kind
 check k8s/overlays/kind/seed
+check k8s/overlays/kind/seed-demo
 echo "-- k8s/tools/k6/job.yaml"
 "$KUBECONFORM" -strict -summary -kubernetes-version "$K8S_VERSION" k8s/tools/k6/job.yaml
 

@@ -30,6 +30,7 @@ kall get nodes
 log "building images"
 docker build --target app -t ledger-service:local . -q
 docker build --target mock-provider -t ledger-mock-provider:local . -q
+docker build -t ledger-web:local web/ -q
 
 # Third-party images are pulled here (once, cached by Docker) and copied into
 # the node, so the cluster never downloads anything itself.
@@ -38,7 +39,7 @@ for img in $THIRD_PARTY; do docker image inspect "$img" >/dev/null 2>&1 || docke
 
 log "loading images into the node"
 # shellcheck disable=SC2086
-kind load docker-image --name "$CLUSTER" ledger-service:local ledger-mock-provider:local $THIRD_PARTY
+kind load docker-image --name "$CLUSTER" ledger-service:local ledger-mock-provider:local ledger-web:local $THIRD_PARTY
 
 log "secrets from .env"
 scripts/k8s/secrets.sh

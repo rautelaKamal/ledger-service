@@ -24,3 +24,6 @@ docker-compose*.yml
 scripts/demo-*.ts
 vitest.config.ts
 README.md
+
+# The web app has its own image and build context (web/Dockerfile)
+web

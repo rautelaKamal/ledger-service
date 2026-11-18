@@ -1,0 +1,87 @@
+# The web app: the ONLY public entry point. The browser talks to this server;
+# it calls the ledger API (public port 3000 and internal port 9100), the
+# assistant and the mock provider inside the cluster, adding X-Client-Id
+# itself. On k3s (6c) Traefik routes to the `web` Service; nothing routes to
+# the API, the assistant or the workers from outside.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  labels:
+    app: web
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: web
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      terminationGracePeriodSeconds: 30
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web
+          image: ledger-web
+          imagePullPolicy: IfNotPresent
+          command: ["node", "server.js"]
+          ports:
+            - name: http
+              containerPort: 3200
+          envFrom:
+            - configMapRef:
+                name: web-config
+          env:
+            - name: SESSION_SECRET
+              valueFrom: { secretKeyRef: { name: web-secrets, key: SESSION_SECRET } }
+          # The web server depends on nothing to be alive; a ledger outage shows
+          # as an error on the page, never as restarted web pods.
+          startupProbe:
+            httpGet: { path: /api/healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /api/healthz, port: http }
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /api/healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            # Let the Service drop this pod before the server stops accepting.
+            preStop:
+              sleep: { seconds: 5 }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: next-cache
+              mountPath: /app/.next/cache
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: next-cache
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

@@ -20,6 +20,8 @@ images:
     newTag: local
   - name: ledger-mock-provider
     newTag: local
+  - name: ledger-web
+    newTag: local
 
 patches:
   - path: patches/metrics-server-kubelet-insecure-tls.yaml
