@@ -31,6 +31,7 @@ log "2. seed accounts"
 scripts/k8s/seed.sh
 A=$(python3 -c 'import json; print(json.load(open("load/out/accounts.json"))["accounts"][0])')
 B=$(python3 -c 'import json; print(json.load(open("load/out/accounts.json"))["accounts"][1])')
+CLIENT=$(python3 -c 'import json; print(json.load(open("load/out/accounts.json"))["clientId"])')  # the accounts' owner
 
 log "3. transfer and top-up through port-forward"
 pids+=("$(port_forward api "$API_PORT" 3000 /healthz)")
@@ -40,7 +41,7 @@ API=http://127.0.0.1:$API_PORT; PROVIDER=http://127.0.0.1:$PROVIDER_PORT
 before_b=$(sql "SELECT balance_paise FROM accounts WHERE id = '$B'")
 key="smoke-$(date +%s)"
 body="{\"fromAccountId\":\"$A\",\"toAccountId\":\"$B\",\"amountPaise\":\"12345\"}"
-post() { curl -sS -o "$3" -w '%{http_code}' -X POST "$1" -H 'content-type: application/json' -H 'x-client-id: smoke' -H "idempotency-key: $2" -D "$3.headers" -d "$body"; }
+post() { curl -sS -o "$3" -w '%{http_code}' -X POST "$1" -H 'content-type: application/json' -H "x-client-id: $CLIENT" -H "idempotency-key: $2" -D "$3.headers" -d "$body"; }
 code=$(post "$API/transfers" "$key" /tmp/smoke-transfer.json)
 [ "$code" = 201 ] || { cat /tmp/smoke-transfer.json; die "transfer: expected 201, got $code"; }
 pass "transfer 201: $(cat /tmp/smoke-transfer.json)"
@@ -93,7 +94,7 @@ EOF
 )
 echo "$targets" | tail -n +2
 [ "$(echo "$targets" | head -1 | cut -d/ -f1)" = "$(echo "$targets" | head -1 | cut -d/ -f2)" ] || die "not every Prometheus target is up"
-[ "$(echo "$targets" | head -1 | cut -d/ -f1)" -ge 4 ] || die "fewer than 4 targets (2 api + 2 workers expected)"
+[ "$(echo "$targets" | head -1 | cut -d/ -f1)" -ge 6 ] || die "fewer than 6 targets (2 api + 2 workers + 2 agents expected)"
 pass "Prometheus: $(echo "$targets" | head -1) targets up, found through headless-Service DNS"
 
 log "5. NetworkPolicy: metrics ports only from Prometheus"
@@ -107,7 +108,63 @@ pass "mock-provider -> api:3000           allowed (the product)"
 # The positive control: Prometheus itself scrapes those ports (every target was "up" in step 4).
 pass "prometheus     -> api-metrics:9100   allowed (its scrapes succeed, step 4)"
 
-log "6. reconciliation"
+log "6. the assistant (agent): not public, and its egress is fenced"
+kc rollout status deployment/agent --timeout=120s >/dev/null
+AGENT_PORT=${AGENT_PORT:-18000}
+pids+=("$(port_forward agent "$AGENT_PORT" 8000 /healthz)")
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$AGENT_PORT/readyz")" = 200 ] || die "agent /readyz is not 200"
+pass "agent ready (database as ledger_agent, migrations 008/009 applied)"
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$AGENT_PORT/metrics")" = 404 ] || die "agent serves /metrics on its API port"
+code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$AGENT_PORT/ask" -H 'content-type: application/json' -d '{"question":"hi"}')
+[ "$code" = 400 ] || die "POST /ask without X-Client-Id: expected 400, got $code"
+pass "GET /metrics on the API port: 404; /ask without X-Client-Id: 400 (no model call made)"
+
+# Ingress: only pods labelled app=web may call the agent. A throwaway pod with that
+# label (the agent image has python; restricted Pod Security needs the full securityContext).
+probe_pod() { # NAME LABEL PYTHON_CODE -> exit status of the code
+  kc delete pod "$1" --ignore-not-found --wait=true >/dev/null 2>&1
+  kc apply -f - >/dev/null <<YAML
+apiVersion: v1
+kind: Pod
+metadata: { name: $1, labels: { app: $2 } }
+spec:
+  restartPolicy: Never
+  securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+  containers:
+    - name: probe
+      image: ledger-agent:local
+      imagePullPolicy: IfNotPresent
+      command: ["python", "-c", "$3"]
+      securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
+      resources: { requests: { cpu: 10m, memory: 32Mi }, limits: { cpu: 200m, memory: 96Mi } }
+YAML
+  for _ in $(seq 1 60); do
+    phase=$(kc get pod "$1" -o jsonpath='{.status.phase}' 2>/dev/null)
+    case $phase in Succeeded) kc delete pod "$1" --wait=false >/dev/null; return 0;; Failed) kc delete pod "$1" --wait=false >/dev/null; return 1;; esac
+    sleep 1
+  done
+  kc delete pod "$1" --wait=false >/dev/null; return 2
+}
+GET='import urllib.request; urllib.request.urlopen(\"http://agent:8000/healthz\", timeout=4)'
+probe_pod web-probe web "$GET" || die "a pod labelled app=web could NOT reach the agent"
+pass "pod labelled app=web -> agent:8000   allowed (the agent's one caller)"
+if probe_pod other-probe not-web "$GET"; then die "a pod NOT labelled app=web reached the agent"; fi
+pass "any other pod      -> agent:8000   blocked"
+if kc exec deploy/mock-provider -- wget -T 3 -qO- http://agent-metrics:9102/metrics >/dev/null 2>&1; then die "agent metrics reachable from a non-Prometheus pod"; fi
+pass "mock-provider      -> agent:9102   blocked (Prometheus only)"
+
+# Egress, from inside an agent pod.
+connect() { kc exec deploy/agent -- python -c "import socket; socket.create_connection(('$1', $2), timeout=4).close()" >/dev/null 2>&1; }
+connect postgres 5432 || die "agent cannot reach postgres:5432"
+pass "agent -> postgres:5432                     allowed"
+connect generativelanguage.googleapis.com 443 || die "agent cannot reach the Gemini API on 443"
+pass "agent -> generativelanguage.googleapis.com:443 allowed (public address, port 443)"
+if connect api 3000; then die "agent reached the ledger api"; fi
+pass "agent -> api:3000                          blocked"
+if connect mock-provider 4100; then die "agent reached the mock provider"; fi
+pass "agent -> mock-provider:4100                blocked"
+
+log "7. reconciliation"
 scripts/k8s/reconcile-now.sh | tail -12
 
 log "smoke test passed"

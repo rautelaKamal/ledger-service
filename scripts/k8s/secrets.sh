@@ -28,6 +28,7 @@ OWNER_PW=$(pw_of "$(val OWNER_DATABASE_URL)");           req OWNER_DATABASE_URL 
 APP_PW=$(pw_of "$(val DATABASE_URL)");                   req DATABASE_URL "$APP_PW"
 WORKER_PW=$(pw_of "$(val WORKER_DATABASE_URL)");         req WORKER_DATABASE_URL "$WORKER_PW"
 RECONCILER_PW=$(pw_of "$(val RECONCILER_DATABASE_URL)"); req RECONCILER_DATABASE_URL "$RECONCILER_PW"
+AGENT_PW=$(pw_of "$(val AGENT_DATABASE_URL)");           req AGENT_DATABASE_URL "$AGENT_PW"
 GRAFANA_ADMIN_PASSWORD=$(val GRAFANA_ADMIN_PASSWORD); GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin-local-only}
 
 DB_HOST=${DB_HOST:-postgres}   # the Service name inside the namespace
@@ -44,14 +45,31 @@ kc create secret generic ledger-secrets \
   --from-literal=LEDGER_APP_PASSWORD="$APP_PW" \
   --from-literal=LEDGER_WORKER_PASSWORD="$WORKER_PW" \
   --from-literal=LEDGER_RECONCILER_PASSWORD="$RECONCILER_PW" \
+  --from-literal=LEDGER_AGENT_PASSWORD="$AGENT_PW" \
   --from-literal=OWNER_DATABASE_URL="$(url ledger_owner "$OWNER_PW")" \
   --from-literal=DATABASE_URL="$(url ledger_app "$APP_PW")" \
   --from-literal=WORKER_DATABASE_URL="$(url ledger_worker "$WORKER_PW")" \
   --from-literal=RECONCILER_DATABASE_URL="$(url ledger_reconciler "$RECONCILER_PW")" \
+  --from-literal=AGENT_DATABASE_URL="$(url ledger_agent "$AGENT_PW")" \
   --from-literal=WEBHOOK_SECRET="$WEBHOOK_SECRET" \
   --dry-run=client -o yaml | kc apply -f - >/dev/null
 kc create secret generic grafana-admin --from-literal=admin-password="$GRAFANA_ADMIN_PASSWORD" \
   --dry-run=client -o yaml | kc apply -f - >/dev/null
 
-echo "secrets ledger-secrets and grafana-admin written to $CTX/$NS from $ENV_FILE"
+# The assistant's own Secret, from agent/.env: the model API key and the
+# optional LangSmith settings. Only the variables present are written; the
+# agent treats each one as optional (no key: /ask answers 503).
+AGENT_ENV_FILE=${AGENT_ENV_FILE:-agent/.env}
+agent_args=()
+if [ -f "$AGENT_ENV_FILE" ]; then
+  for name in GOOGLE_API_KEY LANGSMITH_TRACING LANGSMITH_API_KEY LANGSMITH_PROJECT; do
+    value=$(grep -E "^$name=" "$AGENT_ENV_FILE" | tail -1 | cut -d= -f2- || true)
+    [ -n "$value" ] && agent_args+=(--from-literal="$name=$value")
+  done
+fi
+kc create secret generic agent-secrets ${agent_args[@]+"${agent_args[@]}"} \
+  --dry-run=client -o yaml | kc apply -f - >/dev/null
+
+echo "secrets ledger-secrets, grafana-admin and agent-secrets (${#agent_args[@]} values from $AGENT_ENV_FILE) written to $CTX/$NS"
+echo "(variable names in agent-secrets, never values: $(printf '%s\n' ${agent_args[@]+"${agent_args[@]}"} | sed -E 's/^--from-literal=([A-Z_]+)=.*/\1/' | tr '\n' ' '))"
 case $APP_PW in *_local) echo "note: these are the LOCAL default passwords from .env; fine for kind, never for a real cluster" ;; esac
