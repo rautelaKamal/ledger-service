@@ -19,6 +19,27 @@ import type pg from 'pg';
 /** Every client id the demo owns. The reset touches these and nothing else. */
 export const DEMO_CLIENTS = ['demo-meera', 'demo-arjun', 'demo-kavya', 'demo-merchants', 'demo-chaos'] as const;
 
+/**
+ * Every demo account's balance straight after seeding, in paise. The history is
+ * deterministic (fixed PRNG; "now" only moves timestamps), so these never change;
+ * tests/demo-reset.test.ts proves the seed produces exactly them, and
+ * `npm run demo:check` compares a live demo against them.
+ */
+export const SEED_BALANCES: Readonly<Record<string, bigint>> = {
+  'Meera Iyer, Savings': 57_347_00n,
+  'Meera Iyer, Current': 32_559_75n,
+  'Arjun Rao, Shop': 2_54_671_25n,
+  'Arjun Rao, Personal': 30_000_00n,
+  'Kavya Nair, Savings': 19_417_50n,
+  'Annapurna Stores': 10_221_25n,
+  'City Metro Card': 7_121_50n,
+  'Coastal Power Co.': 8_691_75n,
+  'Chai Point Corner': 5_775_00n,
+  'Bookworm Books': 9_195_00n,
+  'Chaos test A': 10_000_00n,
+  'Chaos test B': 10_000_00n,
+};
+
 type Who = 'meera' | 'arjun' | 'kavya';
 const PEOPLE: Record<Who, { client: string; name: string; accounts: string[] }> = {
   meera: { client: 'demo-meera', name: 'Meera Iyer', accounts: ['Savings', 'Current'] },

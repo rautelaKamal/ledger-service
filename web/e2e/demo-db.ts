@@ -4,9 +4,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Playwright drives a real stack that WRITES (transfers, top-ups, chaos runs).
-// It may only ever write to the demo/e2e database, never to the dev database the
-// eval reads (`ledger`). Locally the stack reads ../.env.e2e.local; in CI the
-// workflow sets the same variables.
+// It may only ever write to ledger_e2e: never to the dev database the eval reads
+// (`ledger`), and never to ledger_demo, the demo you browse. Locally the stack
+// reads ../.env.e2e.local; in CI the workflow sets the same variables.
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const ENV_FILE = join(ROOT, '.env.e2e.local');
 const URL_KEYS = ['DATABASE_URL', 'OWNER_DATABASE_URL', 'WORKER_DATABASE_URL', 'RECONCILER_DATABASE_URL'];
@@ -28,7 +28,11 @@ export function assertE2eDatabase(): void {
   }
 }
 
-/** Wipe and re-seed the demo clients only (scripts/demo-reset.ts), so every run starts and ends clean. */
+/**
+ * Wipe and re-seed the demo clients only (scripts/demo-reset.ts). It then checks
+ * that every demo balance equals the seed and that the ledger reconciles, and
+ * fails (throws) if not.
+ */
 export function resetDemo(): void {
   assertE2eDatabase();
   execFileSync('npx', ['tsx', '--env-file-if-exists=.env.e2e.local', 'scripts/demo-reset.ts'], { cwd: ROOT, stdio: 'inherit' });

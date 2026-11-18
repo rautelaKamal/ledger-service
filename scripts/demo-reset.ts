@@ -4,12 +4,13 @@
 // and seeds them again, in one transaction (src/demo/reset.ts), then runs every
 // reconciliation check: it fails unless the ledger is clean afterwards.
 //
-// Only ever against the demo/e2e database: it refuses any database not named
-// ledger_e2e unless DEMO_RESET_ALLOW_DATABASE names it explicitly. Even then it
-// touches only the demo clients (never eval- clients or anyone else).
+// Only ever against the two demo databases: ledger_demo (the one you browse;
+// `npm run demo:reset` reads .env.demo.local) and ledger_e2e (the one Playwright
+// writes to). Any other database is refused unless DEMO_RESET_ALLOW_DATABASE
+// names it. Even then it touches only the demo clients (never eval- clients).
 import pg from 'pg';
 import { resetDemo } from '../src/demo/reset.js';
-import { runReconciliation } from '../src/reconcile/run.js';
+import { verifyDemo } from '../src/demo/verify.js';
 
 const url = process.env.OWNER_DATABASE_URL;
 if (!url) {
@@ -17,9 +18,9 @@ if (!url) {
   process.exit(1);
 }
 const database = new URL(url).pathname.slice(1);
-const allowed = process.env.DEMO_RESET_ALLOW_DATABASE ?? 'ledger_e2e';
-if (database !== allowed) {
-  console.error(`refusing to reset the demo in database "${database}": only ${allowed} (set DEMO_RESET_ALLOW_DATABASE=${database} to allow it)`);
+const allowed = ['ledger_demo', 'ledger_e2e', ...(process.env.DEMO_RESET_ALLOW_DATABASE ? [process.env.DEMO_RESET_ALLOW_DATABASE] : [])];
+if (!allowed.includes(database)) {
+  console.error(`refusing to reset the demo in database "${database}": only ${allowed.join(' or ')} (set DEMO_RESET_ALLOW_DATABASE=${database} to allow it)`);
   process.exit(1);
 }
 
@@ -33,10 +34,12 @@ try {
   } finally {
     client.release();
   }
-  const report = await runReconciliation(pool);
-  const problems = Object.values(report.summary).reduce((a, b) => a + b, 0);
-  console.log(`reconciliation: ${problems} problem${problems === 1 ? '' : 's'}`);
-  if (!report.ok) process.exitCode = 1;
+  const check = await verifyDemo(pool);
+  if (check.ok) console.log('check: every demo balance matches the seed; reconciliation 0 problems');
+  else {
+    console.error(`check FAILED:\n  ${check.problems.join('\n  ')}`);
+    process.exitCode = 1;
+  }
 } finally {
   await pool.end();
 }
