@@ -82,7 +82,7 @@ export default async function Overview({ searchParams }: { searchParams: Promise
         </h2>
         {pending.length === 0 ? (
           <p className="mt-1 text-ink-soft">
-            Nothing is waiting for the bank. <Link href="/topup" className="underline underline-offset-4">Add money</Link> to see a top-up travel.
+            Nothing is waiting for the bank. <Link href="/topup" className="underline underline-offset-4">Top up</Link> to watch one travel.
           </p>
         ) : (
           <ul className="mt-2 flex flex-col gap-2">

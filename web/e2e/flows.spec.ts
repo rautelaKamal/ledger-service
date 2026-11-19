@@ -95,7 +95,7 @@ for (const outcome of ['Approve', 'Decline'] as const) {
   });
 }
 
-test('4c. "Add money again" starts a NEW top-up (a new key), not a replay of the last one', async ({ page }) => {
+test('4c. "Top up again" starts a NEW top-up (a new key), not a replay of the last one', async ({ page }) => {
   await become(page, 'Kavya Nair');
   await page.goto('/topup');
   const idOf = async () => (await page.getByText(/^Top-up of .*, id \w+…/).innerText()).match(/id (\w+)…/)![1]!;
@@ -105,7 +105,7 @@ test('4c. "Add money again" starts a NEW top-up (a new key), not a replay of the
   await expect(page.getByText(/entered in the passbook/).locator('[data-paise="10000"]')).toBeVisible();
   const first = await idOf();
 
-  await page.getByRole('button', { name: 'Add money again' }).click();
+  await page.getByRole('button', { name: 'Top up again' }).click();
   await page.getByLabel('Amount in rupees').fill('100.00');
   await page.getByRole('button', { name: 'Request a ₹100.00 top-up' }).click();
   await expect(page.getByRole('button', { name: 'Approve as the bank' })).toBeVisible();
@@ -629,11 +629,29 @@ test('21. every key the forms send comes from one generator, with its form\'s pr
     await page.getByRole('button', { name: 'Request a ₹1.00 top-up' }).click();
     await page.getByRole('button', { name: 'Approve as the bank' }).click();
     await expect(page.getByText(/entered in the passbook/)).toBeVisible();
-    if (i === 0) await page.getByRole('button', { name: /^(Add money|Top up) again$/ }).click();
+    if (i === 0) await page.getByRole('button', { name: 'Top up again' }).click();
   }
   expect(sent).toHaveLength(3);
   expect(sent[0]).toMatch(TRANSFER);
   expect(sent[1]).toMatch(TOPUP);
   expect(sent[2]).toMatch(TOPUP);
   expect(new Set(sent).size).toBe(3);
+});
+
+test('22. one name per thing: "Top up" everywhere, "Under the hood" on the phone too', async ({ page }) => {
+  await become(page, 'Meera Iyer');
+  await page.goto('/topup');
+  await expect(page).toHaveTitle(/^Top up/);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Top up');
+  const intro = await page.locator('main h1 + p').innerText();
+  expect(intro.match(/\buntil\b/g)).toHaveLength(1);
+  for (const path of ['/overview', '/topup']) {
+    await page.goto(path);
+    expect(await page.locator('body').innerText(), path).not.toContain('Add money');
+  }
+  await page.setViewportSize({ width: 360, height: 740 });
+  const tabs = page.getByRole('navigation', { name: 'Main' }).filter({ visible: true });
+  await expect(tabs.getByRole('link', { name: 'Top up' })).toBeVisible();
+  await expect(tabs.getByRole('link', { name: 'Under the hood' })).toBeVisible();
+  await expect(tabs.getByRole('link', { name: 'System' })).toHaveCount(0);
 });

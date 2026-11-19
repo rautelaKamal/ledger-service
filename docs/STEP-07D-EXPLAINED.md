@@ -116,7 +116,7 @@ from `agent/policies/` by a single word. With `ASSISTANT_MODE=agent` the same pa
 the real assistant.
 
 **Real states, not just the happy path.** Every page has an empty state that says what to do
-("Nothing is waiting for the bank. Add money to see a top-up travel."), a loading state, and
+("Nothing is waiting for the bank. Top up to watch one travel."), a loading state, and
 errors that say what happened without apologising ("The ledger API did not answer…").
 
 ## 2. Why the browser never sees `X-Client-Id`

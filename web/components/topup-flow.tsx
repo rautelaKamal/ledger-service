@@ -285,7 +285,7 @@ export function TopupFlow({ accounts, maxPaise, initialTopupId, initialKey }: { 
               router.replace('/topup');
             }}
           >
-            Add money again
+            Top up again
           </Button>
         </div>
       ) : null}
