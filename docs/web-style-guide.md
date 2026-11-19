@@ -56,6 +56,30 @@ through. All 5.1:1 or more on every paper.
   copy, find and the accessibility tree return, and that both faces draw their own ₹.
 - Scale 14 / 16 / 18 / 24 / 36 / 60 px. Sentence case everywhere. No monospace.
 
+### Tabular figures: the trade-off
+
+Why spans with margins: an amount has to stay one run of text. Fixed-width inline
+blocks lined digits up exactly, but the browser's find in page cannot match across
+them (Cmd+F did not find "89,906"), and a screen reader may read each block on its
+own; a hidden second copy for screen readers put every amount in the page twice, in
+what is copied and what Cmd+F finds. Inline spans padded by margins keep copy, Cmd+F
+and screen readers right.
+
+The cost: the margins come from digit widths measured on macOS, where Chrome places
+glyphs at fractional positions, and there every slot matches to 0.3 px. Chrome on
+Linux rounds and hints each glyph to whole pixels, so a digit's slot there is off by
+up to **~1.56 px** (measured in CI), and a column of amounts can drift by a pixel or
+two per digit. Test 13 allows 2 px on Linux and 0.3 px elsewhere. A row's last digit
+still ends at the cell's right edge everywhere (the cells are right-aligned).
+
+A possible later improvement: tabular-figure copies of Hind and Rajdhani, built with
+`fonttools` at build time, in which only the digits are re-spaced to one advance
+width. Columns would then line up exactly on every platform with no spans at all.
+Both faces are under the SIL Open Font License, which allows modified versions; a
+modified font must not use a Reserved Font Name if the licence declares one, so the
+copies would be renamed (for example "Ledger Hind Figures") and served with
+`next/font/local` instead of `next/font/google`. Not done yet: it adds a build tool.
+
 ## The one bold element
 
 The **balance header is a cheque's security print**: a flat guilloche, three families

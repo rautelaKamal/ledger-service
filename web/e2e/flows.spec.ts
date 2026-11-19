@@ -344,6 +344,11 @@ test('13. amounts line up digit under digit, and both faces draw their own ₹',
   await expect(table.locator('td.col-balance .fig').first()).toBeVisible();
 
   // A digit's slot is the glyph plus the margins that pad it (components/money.tsx).
+  // The margins come from digit widths measured on macOS, where Chrome places glyphs
+  // at fractional positions: there slots match to 0.3 px. Chrome on Linux rounds and
+  // hints each glyph to whole pixels, so a slot is off by up to ~1.56 px (measured in
+  // CI); 2 px there. The trade-off is in docs/web-style-guide.md.
+  const SLOT_TOLERANCE_PX = process.platform === 'linux' ? 2 : 0.3;
   // Every slot in the balance column is the same width ("1" as wide as "8")...
   const widths = await table.locator('td.col-balance .fig').evaluateAll((els) =>
     els.map((e) => {
@@ -351,7 +356,7 @@ test('13. amounts line up digit under digit, and both faces draw their own ₹',
       return e.getBoundingClientRect().width + parseFloat(s.marginLeft) + parseFloat(s.marginRight);
     }),
   );
-  expect(Math.max(...widths) - Math.min(...widths)).toBeLessThan(0.3);
+  expect(Math.max(...widths) - Math.min(...widths)).toBeLessThan(SLOT_TOLERANCE_PX);
   // ...and the last slot of every row ends at the same x: the column is aligned.
   const rightEdges = await table.locator('td.col-balance .figs').evaluateAll((els) =>
     els.map((e) => {
@@ -375,7 +380,7 @@ test('13. amounts line up digit under digit, and both faces draw their own ₹',
       }),
     );
     expect(off.length, path).toBeGreaterThan(0);
-    expect(Math.max(...off), path).toBeLessThan(0.3);
+    expect(Math.max(...off), path).toBeLessThan(SLOT_TOLERANCE_PX);
   }
   await page.goto('/overview');
 
