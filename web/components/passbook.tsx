@@ -149,10 +149,18 @@ export function Passbook({ accountId, initial }: { accountId: string; initial: P
         </thead>
         {groups.map((g) => (
           <tbody key={g.key}>
-            <tr>
-              <th colSpan={columns.length} scope="rowgroup" className="pt-5 pb-1 text-left font-medium">
-                {g.label}
-              </th>
+            {/* The day heading mirrors every column, so the preprinted column rules and
+                the balance strip run unbroken down the page (on phone and desktop alike). */}
+            <tr className="day">
+              {table.getAllLeafColumns().map((col, i) =>
+                i === 0 ? (
+                  <th key={col.id} scope="rowgroup" className="pt-5 pb-1 text-left font-medium whitespace-nowrap">
+                    {g.label}
+                  </th>
+                ) : (
+                  <td key={col.id} aria-hidden className={col.columnDef.meta?.className} />
+                ),
+              )}
             </tr>
             {g.rows.map((row) => (
               <tr key={row.id} className="border-b border-rule align-top">

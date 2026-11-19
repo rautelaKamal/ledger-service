@@ -59,7 +59,7 @@ export default async function PickPersona() {
         {PERSONAS.map((p) => {
           const h = money.get(p.key);
           return (
-            <li key={p.key} style={tintStyle(p)}>
+            <li key={p.key} data-persona-scope style={tintStyle(p)}>
               <form action="/api/session" method="post">
                 <input type="hidden" name="persona" value={p.key} />
                 <button
