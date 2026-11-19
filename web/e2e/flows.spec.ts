@@ -55,7 +55,7 @@ test('3. a refused transfer says why and moves nothing', async ({ page }) => {
   await become(page, 'Kavya Nair');
   const total = await totalBalance(page);
   await page.goto('/send');
-  await page.getByLabel('Amount in rupees').fill('99,99,999.00');
+  await page.getByLabel('Amount in rupees').fill('1,99,999.00'); // within the transfer limit, far above her balance
   await page.getByRole('button', { name: /^Send ₹/ }).click();
   await expect(page.getByText(/Refused: .*insufficient/i)).toBeVisible();
   expect(await totalBalance(page)).toBe(total);
@@ -364,4 +364,35 @@ test('13. amounts line up digit under digit, and both faces draw their own ₹',
     return [faceOf('body'), faceOf('[data-balance="total"]')].map((face) => draw(`600 40px ${face}, serif`) !== draw('600 40px serif'));
   });
   expect(ownRupee).toEqual([true, true]);
+});
+
+test('14. the limits: the forms state them and refuse more before sending; the API refuses it too', async ({ page }) => {
+  await become(page, 'Meera Iyer');
+  const total = await totalBalance(page);
+  const sent: string[] = [];
+  page.on('request', (r) => r.method() === 'POST' && /\/api\/(transfers|topups)$/.test(new URL(r.url()).pathname) && sent.push(r.url()));
+
+  await page.goto('/send');
+  await expect(page.getByText('At most ₹2,00,000.00 per transfer')).toBeVisible();
+  await page.getByLabel('Amount in rupees').fill('2,00,000.01');
+  await expect(page.getByText('Over the ₹2,00,000.00 limit for one transfer')).toBeVisible();
+  await page.getByRole('button', { name: 'Send ₹2,00,000.01' }).click();
+  await expect(page.getByText('One transfer can move at most ₹2,00,000.00. Send a smaller amount.')).toBeVisible();
+
+  await page.goto('/topup');
+  await expect(page.getByText('At most ₹1,00,000.00 per top-up')).toBeVisible();
+  await page.getByLabel('Amount in rupees').fill('10,00,00,00,000.00'); // the amount found in the review
+  await expect(page.getByText('Over the ₹1,00,000.00 limit for one top-up')).toBeVisible();
+  await page.getByRole('button', { name: 'Request a ₹10,00,00,00,000.00 top-up' }).click();
+  await expect(page.getByText('One top-up can add at most ₹1,00,000.00. Ask for a smaller amount.')).toBeVisible();
+  expect(sent).toEqual([]); // the browser sent nothing
+
+  // The form only repeats what the ledger enforces: past the form, the ledger refuses it too.
+  const accountId = await page.getByLabel('To', { exact: true }).inputValue();
+  const res = await page.request.post('/api/topups', { data: { accountId, amountPaise: '10000001', idempotencyKey: `e2e-limit-${Date.now()}` } });
+  const body = (await res.json()) as { topupId: string | null; exchange: { response: { status: number; body: { error: { code: string; message: string } } } } };
+  expect(body.topupId).toBeNull();
+  expect(body.exchange.response.status).toBe(400);
+  expect(body.exchange.response.body.error).toEqual({ code: 'amount_over_limit', message: 'one top-up can be at most ₹1,00,000.00; this one is ₹1,00,000.01', details: { maxPaise: '10000000' } });
+  expect(await totalBalance(page)).toBe(total);
 });

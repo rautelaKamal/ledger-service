@@ -34,7 +34,7 @@ const REASONS: Record<string, string> = {
 };
 const selectClass = 'h-10 w-full rounded-md border border-input bg-surface px-3';
 
-export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]; payees: Payee[]; initialKey: string }) {
+export function SendForm({ accounts, payees, maxPaise, initialKey }: { accounts: Account[]; payees: Payee[]; maxPaise: string; initialKey: string }) {
   const router = useRouter();
   const ids = useId();
   const [key, setKey] = useState(initialKey);
@@ -48,6 +48,10 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
   const [error, setError] = useState<string | null>(null);
 
   const paise = parseRupees(amount);
+  // The ledger API's own limit (GET /limits): checked here so the person hears it
+  // before sending; the API refuses anything above it regardless.
+  const max = BigInt(maxPaise);
+  const over = paise !== null && paise > max;
 
   // Balances in the From/To lists come from the server: fetch them again whenever
   // this tab comes back into view (money may have moved elsewhere meanwhile).
@@ -92,6 +96,7 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
   async function onSubmit(e: React.FormEvent): Promise<void> {
     e.preventDefault();
     if (!paise) return setError('Enter an amount in rupees, for example 1,200.00.');
+    if (over) return setError(`One transfer can move at most ${formatPaise(max)}. Send a smaller amount.`);
     if (from === to) return setError('Choose a different account to send to.');
     const r = await send();
     if (r) {
@@ -166,11 +171,18 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
             onChange={(e) => setAmount(e.target.value)}
             disabled={locked}
             className="money h-10"
-            aria-invalid={amount !== '' && !paise}
+            aria-invalid={amount !== '' && (!paise || over)}
+            aria-describedby={`${ids}-amount-help`}
           />
           {/* The line is always there (empty or not), so typing never moves the Send button. */}
-          <span className="min-h-5 text-sm text-ink-soft" aria-live="polite">
-            {amount === '' ? '\u00a0' : paise ? formatPaise(paise) : 'Rupees, for example 1,200.00'}
+          <span id={`${ids}-amount-help`} className={over ? 'min-h-5 text-sm text-failed' : 'min-h-5 text-sm text-ink-soft'} aria-live="polite">
+            {amount === ''
+              ? `At most ${formatPaise(max)} per transfer`
+              : !paise
+                ? 'Rupees, for example 1,200.00'
+                : over
+                  ? `Over the ${formatPaise(max)} limit for one transfer`
+                  : formatPaise(paise)}
           </span>
         </div>
         <div className="flex flex-col gap-1.5">

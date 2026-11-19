@@ -45,7 +45,7 @@ function Step({ n, title, state, children }: { n: number; title: string; state: 
   );
 }
 
-export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: Account[]; initialTopupId?: string; initialKey: string }) {
+export function TopupFlow({ accounts, maxPaise, initialTopupId, initialKey }: { accounts: Account[]; maxPaise: string; initialTopupId?: string; initialKey: string }) {
   const router = useRouter();
   const ids = useId();
   const [account, setAccount] = useState(accounts[0]?.id ?? '');
@@ -61,6 +61,9 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
   const started = useRef(0);
   const done = useRef(false);
   const paise = parseRupees(amount);
+  // The ledger API's own limit (GET /limits), said before sending; the API refuses above it regardless.
+  const max = BigInt(maxPaise);
+  const over = paise !== null && paise > max;
 
   const poll = useCallback(async () => {
     if (!topupId) return;
@@ -100,6 +103,7 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
   async function request(e: React.FormEvent): Promise<void> {
     e.preventDefault();
     if (!paise) return setError('Enter an amount in rupees, for example 5,000.00.');
+    if (over) return setError(`One top-up can add at most ${formatPaise(max)}. Ask for a smaller amount.`);
     setBusy(true);
     setError(null);
     try {
@@ -152,7 +156,16 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
       <form onSubmit={request} className="flex max-w-xl flex-wrap items-end gap-4">
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${ids}-amount`}>Amount in rupees</Label>
-          <Input id={`${ids}-amount`} inputMode="decimal" placeholder="5,000.00" value={amount} onChange={(e) => setAmount(e.target.value)} className="money h-10 w-40" />
+          <Input
+            id={`${ids}-amount`}
+            inputMode="decimal"
+            placeholder="5,000.00"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            className="money h-10 w-40"
+            aria-invalid={amount !== '' && (!paise || over)}
+            aria-describedby={`${ids}-amount-help`}
+          />
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${ids}-account`}>To</Label>
@@ -167,6 +180,10 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
         <Button type="submit" size="lg" className="h-10" disabled={busy}>
           {busy ? 'Requesting…' : paise ? `Request a ${formatPaise(paise)} top-up` : 'Request top-up'}
         </Button>
+        {/* Under the whole row, not the field: the fields' labels stay level. */}
+        <p id={`${ids}-amount-help`} className={cn('w-full text-sm', over ? 'text-failed' : 'text-ink-soft')} aria-live="polite">
+          {over ? `Over the ${formatPaise(max)} limit for one top-up` : `At most ${formatPaise(max)} per top-up`}
+        </p>
         {error ? (
           <p role="alert" className="w-full border-l-2 border-failed pl-3 text-failed">
             {error}
