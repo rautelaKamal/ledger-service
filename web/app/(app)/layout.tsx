@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import type { ReactNode } from 'react';
+import { DemoBanner } from '@/components/demo-banner';
 import { NavLinks } from '@/components/nav-links';
 import { PersonaSwitcher } from '@/components/persona-switcher';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -15,7 +16,8 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
 
   return (
     // The whole page is this person's: their cheque paper (light), their tint on the quiet lines.
-    <div data-persona-scope style={tintStyle(persona)} className="min-h-[calc(100dvh-2.25rem)] bg-background text-foreground">
+    <div data-persona-scope style={tintStyle(persona)} className="min-h-dvh bg-background text-foreground">
+    <DemoBanner />
     <div className="mx-auto flex min-h-[calc(100dvh-2.25rem)] max-w-6xl">
       <nav aria-label="Main" className="sticky top-0 hidden h-[calc(100dvh-2.25rem)] w-56 shrink-0 flex-col gap-8 border-r border-rule px-4 py-6 md:flex">
         <Link href="/" className="px-3 font-figures text-2xl font-semibold">

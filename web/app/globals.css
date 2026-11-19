@@ -174,11 +174,14 @@ code {
   overflow-wrap: anywhere;
 }
 
-/* Every amount: tabular figures, so columns of rupees line up digit under digit. */
-.money {
-  font-variant-numeric: tabular-nums lining-nums;
-  font-feature-settings: 'tnum' 1, 'lnum' 1;
-}
+/* Every amount: tabular figures, emulated (components/money.tsx): neither face has
+   a tnum feature, so each digit gets a slot as wide as the face's widest digit. */
+.money { --fig-w: 0.555em; } /* Hind's widest digit, any weight in use */
+.font-figures { --fig-w: 0.535em; } /* Rajdhani 600 */
+.figs .fig { display: inline-block; width: var(--fig-w); text-align: center; }
+/* A strike-through does not reach into inline blocks by itself: hand it down. */
+.figs,
+.figs .fig { text-decoration: inherit; }
 
 /* Pending: hatched, so it reads as "not yet" without relying on colour. */
 .hatch {
@@ -224,8 +227,9 @@ code {
   background-image: var(--microprint-light); background-repeat: repeat-x; background-size: auto 6px;
   opacity: 0.8;
 }
-.dark .security-art { filter: drop-shadow(0 0 0.5px var(--tint-uv, var(--ink-soft))); }
-.dark .security-art > .lines { background-color: var(--tint-uv, var(--ink-soft)); opacity: var(--uv, 0.16); }
+/* Dark: no glow; the band in the person's toned tint, a visible step up, so each
+   person is recognisable under the "UV lamp" too. */
+.dark .security-art > .lines { background-color: var(--tint-ink, var(--ink-soft)); opacity: var(--uv, 0.28); }
 .dark .security-art > .microprint { background-image: var(--microprint-dark); opacity: 0.5; }
 /* The cheque's amount box: the figure sits on clear paper, never on the print. */
 .amount-box { background: var(--paper); border: 1px solid var(--rule); padding: 0.1em 0.35em; }
@@ -250,7 +254,7 @@ code {
   background: color-mix(in oklab, var(--tint-ink) 7%, var(--paper));
   padding-right: 0.5rem;
 }
-.dark .passbook .col-balance { background: color-mix(in oklab, var(--tint-ink) 9%, var(--paper)); }
+.dark .passbook .col-balance { background: color-mix(in oklab, var(--tint-ink) 12%, var(--paper)); }
 .money-out { color: var(--money-out); }
 
 /* The theme toggle's circular reveal (components/theme-toggle.tsx): the browser's

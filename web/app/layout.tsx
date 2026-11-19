@@ -31,9 +31,6 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:bg-surface focus:px-3 focus:py-2">
               Skip to content
             </a>
-            <p className="border-b border-rule bg-surface px-4 py-1.5 text-center text-sm text-ink-soft">
-              Demo: fictional people, no real money.
-            </p>
             {children}
           </TooltipProvider>
         </ThemeProvider>

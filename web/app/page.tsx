@@ -1,3 +1,4 @@
+import { DemoBanner } from '@/components/demo-banner';
 import { Money } from '@/components/money';
 import { SecurityArt } from '@/components/security-print';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -34,6 +35,8 @@ export default async function PickPersona() {
   const ledgerDown = [...money.values()].every((v) => v === null);
 
   return (
+    <>
+    <DemoBanner />
     <main id="main" className="mx-auto max-w-5xl px-5 pt-10 pb-16 sm:px-8 sm:pt-16">
       <div className="flex items-start justify-between gap-4">
         <h1 className="max-w-[22ch] text-4xl leading-tight font-semibold sm:text-6xl sm:leading-[1.05]">Pick someone to be.</h1>
@@ -91,5 +94,6 @@ export default async function PickPersona() {
         })}
       </ul>
     </main>
+    </>
   );
 }

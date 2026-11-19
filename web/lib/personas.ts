@@ -9,7 +9,8 @@ export interface Persona {
   blurb: string;
   /**
    * The tint of their security print, after a banknote's colour. Decoration only,
-   * never text. `uv`: how strongly it shows in dark mode (bright tints need less).
+   * never text. `uv`: how strongly the print shows in dark mode, where it uses the
+   * tint toned 30% towards soft ink (no glow, no acid colour).
    */
   tint: { light: string; dark: string; uv: number; note: string };
   /** Light mode only: the cheque paper of their pages (dark mode is one ink blue-black for all). */
@@ -22,7 +23,7 @@ export const PERSONAS: readonly Persona[] = [
     name: 'Meera Iyer',
     firstName: 'Meera',
     blurb: 'Salaried, keeps a savings and a current account',
-    tint: { light: '#2f7fa6', dark: '#63c6f0', uv: 0.11, note: '₹50 blue' },
+    tint: { light: '#2f7fa6', dark: '#63c6f0', uv: 0.3, note: '₹50 blue' },
     paper: { paper: '#eaf1f6', surface: '#f5f9fb', rule: '#c3d3df' },
   },
   {
@@ -30,7 +31,7 @@ export const PERSONAS: readonly Persona[] = [
     name: 'Arjun Rao',
     firstName: 'Arjun',
     blurb: 'Runs a small shop; card settlements arrive as top-ups',
-    tint: { light: '#8a5a35', dark: '#e0a574', uv: 0.12, note: '₹10 brown' },
+    tint: { light: '#8a5a35', dark: '#e0a574', uv: 0.32, note: '₹10 brown' },
     paper: { paper: '#f4eeeb', surface: '#fbf8f6', rule: '#dccdc5' },
   },
   {
@@ -38,7 +39,7 @@ export const PERSONAS: readonly Persona[] = [
     name: 'Kavya Nair',
     firstName: 'Kavya',
     blurb: 'Student; small amounts, one account',
-    tint: { light: '#5f7d17', dark: '#c2e05a', uv: 0.08, note: '₹20 green' },
+    tint: { light: '#5f7d17', dark: '#c2e05a', uv: 0.3, note: '₹20 green' },
     paper: { paper: '#edf3e7', surface: '#f7faf3', rule: '#cddbc0' },
   },
 ];
