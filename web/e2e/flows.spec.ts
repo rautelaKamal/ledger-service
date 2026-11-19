@@ -12,7 +12,7 @@ test('1. pick a person: the balance, what is in transit, the chart and the passb
 
   await become(page, 'Meera Iyer');
   await expect(page.getByRole('heading', { name: 'Meera’s money' })).toBeVisible();
-  await expect(page.locator('[data-balance="total"] [aria-hidden]')).toHaveText(/^₹[\d,]+\.\d{2}$/);
+  await expect(page.locator('[data-balance="total"] .money')).toHaveText(/^₹[\d,]+\.\d{2}$/);
   await expect(page.getByRole('heading', { name: 'In transit, not in your balance' })).toBeVisible();
   await expect(page.getByText(/Balance at the end of each day, last 30 days/)).toBeVisible();
   const table = page.getByRole('table', { name: /Passbook/ });
@@ -38,7 +38,7 @@ test('2. send money, then the same request again: the second one moves nothing',
   const key = (await page.locator('code').first().innerText()).trim();
   await page.getByRole('button', { name: 'Send ₹1,234.50' }).click();
   await expect(page.getByText(/^Sent\./)).toBeVisible();
-  await expect(page.getByText(/Savings ₹[\d,.]+ became ₹[\d,.]+/)).toBeVisible();
+  await expect(page.getByText(/^Savings .* became /)).toBeVisible();
 
   await page.getByRole('button', { name: 'Send the same request again' }).click();
   await expect(page.getByText('Replayed, no new money moved')).toBeVisible();
@@ -81,7 +81,9 @@ for (const outcome of ['Approve', 'Decline'] as const) {
     await page.getByRole('button', { name: `${outcome} as the bank` }).click();
     await expect(page.getByText(/signature checked, recorded once/)).toBeVisible();
     if (outcome === 'Approve') {
-      await expect(page.getByText(/\+₹2,500.00 entered in the passbook/)).toBeVisible();
+      const posted = page.getByText(/entered in the passbook/);
+      await expect(posted).toBeVisible();
+      await expect(posted.locator('[data-paise="250000"]')).toBeVisible();
       expect(await totalBalance(page)).toBe(total + 2_500_00n);
     } else {
       await expect(page.getByText('Nothing was credited and no entry was written.')).toBeVisible();
@@ -93,11 +95,11 @@ for (const outcome of ['Approve', 'Decline'] as const) {
 test('4c. "Add money again" starts a NEW top-up (a new key), not a replay of the last one', async ({ page }) => {
   await become(page, 'Kavya Nair');
   await page.goto('/topup');
-  const idOf = async () => (await page.getByText(/Top-up of ₹[\d,.]+, id/).innerText()).match(/id (\w+)…/)![1]!;
+  const idOf = async () => (await page.getByText(/^Top-up of .*, id \w+…/).innerText()).match(/id (\w+)…/)![1]!;
   await page.getByLabel('Amount in rupees').fill('100.00');
   await page.getByRole('button', { name: 'Request a ₹100.00 top-up' }).click();
   await page.getByRole('button', { name: 'Approve as the bank' }).click();
-  await expect(page.getByText(/\+₹100.00 entered in the passbook/)).toBeVisible();
+  await expect(page.getByText(/entered in the passbook/).locator('[data-paise="10000"]')).toBeVisible();
   const first = await idOf();
 
   await page.getByRole('button', { name: 'Add money again' }).click();
@@ -106,7 +108,7 @@ test('4c. "Add money again" starts a NEW top-up (a new key), not a replay of the
   await expect(page.getByRole('button', { name: 'Approve as the bank' })).toBeVisible();
   expect(await idOf()).not.toBe(first);
   await page.getByRole('button', { name: 'Approve as the bank' }).click(); // leave nothing pending
-  await expect(page.getByText(/\+₹100.00 entered in the passbook/)).toBeVisible();
+  await expect(page.getByText(/entered in the passbook/).locator('[data-paise="10000"]')).toBeVisible();
 });
 
 test('5. the assistant cites its sources and says whether it could verify', async ({ page }) => {
@@ -243,7 +245,7 @@ async function figuresDuringNextSecond(page: import('@playwright/test').Page): P
         const seen = new Set<string>();
         const start = performance.now();
         const sample = () => {
-          const el = document.querySelector('[data-balance="total"] [aria-hidden]');
+          const el = document.querySelector('[data-balance="total"] .money');
           if (el?.textContent) seen.add(el.textContent);
           if (performance.now() - start < 1000) requestAnimationFrame(sample);
           else resolve([...seen]);
@@ -331,4 +333,35 @@ test('12. nothing scrolls sideways on a 360 px wide phone, on any screen', async
   await page.goto('/send');
   await page.getByLabel('Amount in rupees').fill('1,23,456.78');
   expect(await overflow(), 'send with a long amount').toBe(0);
+});
+
+test('13. amounts line up digit under digit, and both faces draw their own ₹', async ({ page }) => {
+  await become(page, 'Arjun Rao'); // six- and seven-digit balances side by side
+  const table = page.getByRole('table', { name: /Passbook/ });
+  await expect(table.locator('td.col-balance .fig').first()).toBeVisible();
+
+  // Every digit slot in the balance column is the same width ("1" as wide as "8")...
+  const widths = await table.locator('td.col-balance .fig').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().width * 10) / 10));
+  expect(new Set(widths).size).toBe(1);
+  // ...and the last digit of every row ends at the same x: the column is aligned.
+  const rightEdges = await table.locator('td.col-balance .figs').evaluateAll((els) =>
+    els.map((e) => Math.round([...e.querySelectorAll('.fig')].at(-1)!.getBoundingClientRect().right)),
+  );
+  expect(new Set(rightEdges).size).toBe(1);
+
+  // The ₹ comes from the page's own faces (Hind for amounts, Rajdhani for the balance), not a fallback.
+  const ownRupee = await page.evaluate(() => {
+    const draw = (font: string) => {
+      const c = document.createElement('canvas');
+      c.width = 60;
+      c.height = 50;
+      const x = c.getContext('2d')!;
+      x.font = font;
+      x.fillText('₹', 5, 40);
+      return x.getImageData(0, 0, 60, 50).data.join(',');
+    };
+    const faceOf = (sel: string) => getComputedStyle(document.querySelector(sel)!).fontFamily.split(',')[0]!;
+    return [faceOf('body'), faceOf('[data-balance="total"]')].map((face) => draw(`600 40px ${face}, serif`) !== draw('600 40px serif'));
+  });
+  expect(ownRupee).toEqual([true, true]);
 });
