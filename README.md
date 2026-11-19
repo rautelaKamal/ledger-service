@@ -71,6 +71,13 @@ Body (no extra fields allowed):
 `amountPaise` is a **string** holding a positive integer (`^[1-9][0-9]*$`) so the amount
 never passes through a floating-point number.
 
+**Limits per request** (one place: [src/limits.ts](src/limits.ts)): one transfer moves at most
+**₹2,00,000.00** (`"20000000"`), one top-up asks for at most **₹1,00,000.00** (`"10000000"`).
+Above that the answer is `400 amount_over_limit` with a message that names the limit; like any
+invalid amount it is not stored under the key, so the key can be used again. `GET /limits`
+returns both (`{ "topupMaxPaise": "10000000", "transferMaxPaise": "20000000" }`); the web app's
+forms read them from there.
+
 ```bash
 curl -i -X POST http://localhost:3000/transfers \
   -H 'Content-Type: application/json' \
@@ -82,7 +89,7 @@ curl -i -X POST http://localhost:3000/transfers \
 | Status | When |
 |---|---|
 | `201 { "transactionId": … }` | money moved (or, with `Idempotent-Replayed: true`, moved earlier under this key) |
-| `400` | invalid body or amount, same account, missing `Idempotency-Key` |
+| `400` | invalid body or amount, amount over the limit (`amount_over_limit`), same account, missing `Idempotency-Key` |
 | `401` | missing `X-Client-Id` |
 | `404` | an account does not exist |
 | `409` + `Retry-After: 1` | the first request with this key is still running after 5 s (configurable) |
@@ -124,6 +131,7 @@ curl -X POST http://localhost:4100/payments/<paymentId>/succeed -H 'Content-Type
 | Status (POST /topups) | When |
 |---|---|
 | `202 { topupId, status: "pending" }` | top-up recorded and the provider call queued; money arrives by webhook |
+| `400` | invalid body or amount; more than ₹1,00,000.00 (`amount_over_limit`, nothing stored) |
 | `404` / `422` | unknown account; not a user account; currency with no settlement account |
 
 | Status (POST /webhooks/provider) | When |

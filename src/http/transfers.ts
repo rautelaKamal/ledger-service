@@ -11,6 +11,7 @@ import {
   type IdempotentOptions,
 } from '../idempotency.js';
 import { transferWithClient } from '../ledger/transfer.js';
+import { TRANSFER_MAX_PAISE, overLimit } from '../limits.js';
 import { errorBody, mapBusinessError } from './errors.js';
 import { readIdempotencyHeaders } from './idempotency-headers.js';
 
@@ -60,6 +61,13 @@ export function transfersRouter(pool: Pool, metrics: ApiMetrics, options: Idempo
       return;
     }
     const body = parsed.data;
+    // Above the per-request limit (src/limits.ts): invalid like a malformed
+    // amount, so it is not stored under the key either.
+    const tooMuch = overLimit('transfer', BigInt(body.amountPaise), TRANSFER_MAX_PAISE);
+    if (tooMuch) {
+      res.status(400).json(errorBody('amount_over_limit', tooMuch, { maxPaise: TRANSFER_MAX_PAISE.toString() }));
+      return;
+    }
 
     try {
       const result = await runIdempotent(

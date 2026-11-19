@@ -7,6 +7,7 @@ import { topupsRouter } from './http/topups.js';
 import { transfersRouter } from './http/transfers.js';
 import { webhooksRouter } from './http/webhooks.js';
 import type { IdempotentOptions } from './idempotency.js';
+import { TOPUP_MAX_PAISE, TRANSFER_MAX_PAISE } from './limits.js';
 import { logger } from './logger.js';
 import { createApiMetrics, type ApiMetrics } from './metrics.js';
 import { checkReadiness } from './readiness.js';
@@ -106,6 +107,12 @@ export function createApp(pool: Pool, options: AppOptions): express.Express {
       res.type(metrics.registry.contentType).send(await metrics.registry.metrics());
     });
   }
+
+  // What one request may move (src/limits.ts), so a client can say so before it sends.
+  // Paise as strings, like every amount in this API. The same for every caller.
+  app.get('/limits', (_req, res) => {
+    res.status(200).json({ topupMaxPaise: TOPUP_MAX_PAISE.toString(), transferMaxPaise: TRANSFER_MAX_PAISE.toString() });
+  });
 
   const idempotency = { ...(options.keyClaimTimeoutMs !== undefined ? { keyClaimTimeoutMs: options.keyClaimTimeoutMs } : {}) };
   app.use(transfersRouter(pool, metrics, idempotency));
