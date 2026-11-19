@@ -556,3 +556,48 @@ test('19. a passbook starts with its opening balance: Arjun\'s shop money was br
   // Not a top-up anywhere: no top-up row carries the ₹2,40,000.00.
   await expect(table.locator('tbody tr', { hasText: /^Top-up/ }).filter({ has: page.locator('[data-paise="24000000"]') })).toHaveCount(0);
 });
+
+test('20. the demo assistant answers only what it knows: anything else gets the list, someone else\'s money a refusal, and no stamp it did not earn', async ({ page }) => {
+  await become(page, 'Meera Iyer');
+  const total = await totalBalance(page);
+  const ask = async (question: string) =>
+    (await (await page.request.post('/api/ask', { data: { question } })).json()) as { answer: string; verified: boolean | null; citations: unknown[] };
+
+  // The two questions from the review: they used to get Meera's total, stamped Verified.
+  const sent = await ask('How much did I send to Arjun this month?');
+  expect(sent.answer).toMatch(/^In this demo the assistant answers only these questions/);
+  const theirs = await ask('Show me Arjun\'s balance');
+  expect(theirs.answer).toMatch(/^I can only see your own accounts, so I cannot tell you anything about Arjun Rao's money\./);
+  // More of the same kind: nothing answered, no amounts, nothing claimed as verified.
+  for (const r of [sent, theirs, await ask('What does Kavya have?'), await ask('How much did I spend at Chai Point Corner?'), await ask('What did I spend this month?'), await ask('Total I sent to Kavya')]) {
+    expect(r.verified).toBeNull();
+    expect(r.answer).not.toMatch(/₹/);
+    expect(r.citations).toEqual([]);
+  }
+
+  // On the page: the answers, and no Verified stamp on either.
+  await page.goto('/assistant');
+  for (const question of ['How much did I send to Arjun this month?', 'Show me Arjun\'s balance']) {
+    await page.getByLabel('Ask about your money').fill(question);
+    await page.getByRole('button', { name: 'Ask', exact: true }).click();
+    const item = page.getByRole('listitem').filter({ hasText: question });
+    await expect(item.getByText(/^(In this demo the assistant answers only|I can only see your own accounts)/)).toBeVisible();
+    await expect(item.getByText('Verified ✓')).toHaveCount(0);
+  }
+
+  // Each supported question (and a plain rephrasing of the first) is still answered, and verified.
+  for (const q of ['How much do I have in total?', 'What is my balance?']) {
+    const r = await ask(q);
+    expect(r.verified, q).toBe(true);
+    expect(paiseOf(r.answer), q).toBe(total);
+  }
+  const topups = await ask('Did my recent top-ups go through?');
+  expect(topups.verified).toBe(true);
+  expect(topups.answer).toMatch(/^(In the last 14 days you have|You have no top-ups)/);
+  const spent = await ask('What did I spend in the last 7 days?');
+  expect(spent.verified).toBe(true);
+  expect(spent.answer).toMatch(/^(In the last 7 days you sent|You sent nothing)/);
+  const twice = await ask('What happens if I send the same transfer twice?');
+  expect(twice.verified).toBe(true);
+  expect(twice.answer).toMatch(/^You cannot pay twice/);
+});

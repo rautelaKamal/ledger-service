@@ -1,7 +1,7 @@
 import 'server-only';
 import { dayLabel } from '@/lib/dates';
 import { formatPaise, sumPaise } from '@/lib/money';
-import type { Persona } from '@/lib/personas';
+import { PERSONAS, type Persona } from '@/lib/personas';
 import type { Account, PassbookRow } from '@/lib/types';
 import { env } from './env';
 import { clientIdOf } from './identity';
@@ -37,13 +37,44 @@ export const SUGGESTED = [
 const short = (name: string) => name.split(', ').at(-1) ?? name;
 const AMOUNT = /₹[\d,]+\.\d{2}/g;
 
+/**
+ * Which supported question is this, if any? Deliberately narrow: the script answers
+ * only when the question clearly is one of the four it can answer; anything else
+ * gets the list (no amounts, nothing to verify), and a question about someone else's
+ * money is refused before any data is read: this person can only see their own.
+ */
+export type Intent = 'total' | 'topups' | 'spent7' | 'duplicates' | { someoneElse: string } | 'unsupported';
+
+export function classify(question: string, self: Persona): Intent {
+  const q = question.toLowerCase().replace(/[’‘]/g, "'").replace(/\s+/g, ' ').trim();
+  const has = (re: RegExp) => re.test(q);
+  for (const other of PERSONAS.filter((p) => p.key !== self.key)) {
+    const n = other.firstName.toLowerCase();
+    // "Arjun's balance", or Arjun as the one who has or spends money ("what does
+    // Kavya have"), but not Arjun as the other side of the person's own transfer
+    // ("send to Arjun": that is their own data, just not a question the script knows).
+    const possessive = has(new RegExp(`\\b${n}'s?\\b`)) && !has(new RegExp(`\\b(to|from|with|for) ${n}\\b`));
+    const theirMoney = has(new RegExp(`\\b${n}\\b`)) && !has(new RegExp(`\\b(to|from|with|for) ${n}\\b`)) && has(/\b(balance|accounts?|money|savings|has|have|spend|spent|spending|top.?ups?)\b/);
+    if (possessive || theirMoney) return { someoneElse: other.name };
+  }
+  if (has(/\b(someone else|other people|everyone|anybody|somebody)('s)?\b/)) return { someoneElse: 'anyone else' };
+
+  const moneyOut = has(/\b(spen[dt]|spending|sent|send|paid|pay|outgoing)\b/);
+  const aboutSomeone = has(/\b(to|at|on|for) (?!the\b|a\b)\w/);
+  if (has(/\b(twice|duplicate|double)\b|\bsame (transfer|request|payment)\b/) && has(/\b(send|sent|pay|paid|transfer|request|payment|charged)\b/)) return 'duplicates';
+  if (has(/\btop[- ]?ups?\b/) && !moneyOut) return 'topups';
+  if (moneyOut && has(/\b(last|past) (7|seven) days\b|\bthis week\b/) && !aboutSomeone) return 'spent7';
+  if (!moneyOut && !has(/\b(this|last) (month|year|week)\b|\btop.?up/) && (has(/\b(total|altogether|in all|overall)\b/) || has(/\bhow much (money )?(do i have|have i got|is in my)\b/) || has(/\b(my|what'?s my|what is my) (total )?balances?\b/))) return 'total';
+  return 'unsupported';
+}
+
 /** The verifier's rule, in plain code: every amount in the answer must be one the script fetched or computed. */
 export function verifyAmounts(answer: string, facts: Set<string>): boolean {
   return (answer.match(AMOUNT) ?? []).every((a) => facts.has(a));
 }
 
 async function scripted(persona: Persona, question: string): Promise<AssistantAnswer> {
-  const q = question.toLowerCase();
+  const intent = classify(question, persona);
   const clientId = clientIdOf(persona);
   const steps: string[] = [];
   const citations: Citation[] = [];
@@ -78,12 +109,24 @@ async function scripted(persona: Persona, question: string): Promise<AssistantAn
     return { mode: 'scripted', answer, verified, citations, steps };
   };
 
-  if (/twice|duplicate|same (transfer|request|payment)|again/.test(q)) {
+  const list = SUGGESTED.map((s) => `"${s}"`).join(', ');
+  if (typeof intent === 'object') {
+    steps.push('The question is about someone else\'s money: refused without reading any data.');
+    return {
+      mode: 'scripted',
+      answer: `I can only see your own accounts, so I cannot tell you anything about ${intent.someoneElse === 'anyone else' ? 'anyone else\'s' : `${intent.someoneElse}'s`} money. Ask about yours, for example: ${list}.`,
+      verified: null,
+      citations: [],
+      steps,
+    };
+  }
+
+  if (intent === 'duplicates') {
     steps.push('Matched the policy on duplicate payments.');
     return finish(`You cannot pay twice by sending the same request again: the ledger returns the original result instead of moving money a second time${citePolicy(POLICIES.duplicates)}. The Send page lets you try it.`);
   }
 
-  if (/top.?up|arrive|go through|went through/.test(q)) {
+  if (intent === 'topups') {
     const accounts = await loadAccounts();
     const rows = (await loadRows(accounts)).filter((r) => r.kind === 'topup' && Date.now() - new Date(r.createdAt).getTime() < 14 * 86_400_000);
     if (rows.length === 0) return finish('You have no top-ups in the last 14 days.');
@@ -110,7 +153,7 @@ async function scripted(persona: Persona, question: string): Promise<AssistantAn
     return finish(answer);
   }
 
-  if (/spen|spent|outgoing|last 7 days|this week/.test(q)) {
+  if (intent === 'spent7') {
     const accounts = await loadAccounts();
     const out = (await loadRows(accounts)).filter((r) => r.status === 'posted' && BigInt(r.amountPaise) < 0n && Date.now() - new Date(r.createdAt).getTime() < 7 * 86_400_000);
     if (out.length === 0) return finish('You sent nothing in the last 7 days.');
@@ -124,7 +167,7 @@ async function scripted(persona: Persona, question: string): Promise<AssistantAn
     return finish(`In the last 7 days you sent ${fact(total)} in ${out.length} transfer${out.length === 1 ? '' : 's'}. The largest: ${list.join(', ')}.`);
   }
 
-  if (/total|balance|how much|have/.test(q)) {
+  if (intent === 'total') {
     const accounts = await loadAccounts();
     const total = sumPaise(accounts.map((a) => a.balancePaise));
     steps.push('Added the balances in code.');
@@ -135,10 +178,10 @@ async function scripted(persona: Persona, question: string): Promise<AssistantAn
     return finish(answer);
   }
 
-  steps.push('No script matches this question.');
+  steps.push('The question is not one of the few this demo script answers: nothing was read.');
   return {
     mode: 'scripted',
-    answer: `In this demo the assistant runs without a language model and answers only a few questions, for example: ${SUGGESTED.map((s) => `"${s}"`).join(', ')}.`,
+    answer: `In this demo the assistant answers only these questions, without a language model: ${list}.`,
     verified: null,
     citations: [],
     steps,
