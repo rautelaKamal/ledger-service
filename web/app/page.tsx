@@ -99,7 +99,7 @@ export default async function PickPersona() {
               <a
                 href={`/api/session?persona=${p.key}`}
                 aria-describedby={`${id('accounts')} ${id('blurb')} ${id('balance')}`}
-                className="slip-link px-5 pt-1 pb-4 text-sm text-ink-soft group-hover:text-ink"
+                className="slip-link px-5 pt-2 pb-5 text-lg font-medium text-ink underline decoration-tint-ink decoration-2 underline-offset-[5px] group-hover:decoration-[3px]"
               >
                 Continue as {p.name}
               </a>

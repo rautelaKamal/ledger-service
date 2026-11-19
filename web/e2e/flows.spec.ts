@@ -692,3 +692,20 @@ test('23. Send and Top up are one form: same grid and fields; a field\'s problem
   expect((await alert.boundingBox())!.y).toBeGreaterThan((await page.locator('main form button[type="submit"]').boundingBox())!.y);
   await expect(page.getByText('₹10.00', { exact: true })).toBeVisible(); // the field itself is fine
 });
+
+test('24. on each slip "Continue as …" reads as the main action: larger than the slip\'s own text, ink, underlined like a link, not a boxed button', async ({ page }) => {
+  await page.goto('/');
+  for (const name of ['Meera Iyer', 'Arjun Rao', 'Kavya Nair']) {
+    const link = page.getByRole('link', { name: `Continue as ${name}`, exact: true });
+    const style = await link.evaluate((el) => {
+      const s = getComputedStyle(el);
+      const blurb = getComputedStyle(el.closest('li')!.querySelector('[id$="-blurb"]')!);
+      return { size: parseFloat(s.fontSize), blurb: parseFloat(blurb.fontSize), weight: Number(s.fontWeight), line: s.textDecorationLine, border: s.borderTopWidth, bg: s.backgroundColor };
+    });
+    expect(style.size, name).toBeGreaterThan(style.blurb);
+    expect(style.weight, name).toBeGreaterThanOrEqual(500);
+    expect(style.line, name).toContain('underline');
+    expect([style.border, style.bg], name).toEqual(['0px', 'rgba(0, 0, 0, 0)']); // a link, not a button
+  }
+  await expectAccessible(page);
+});
