@@ -57,38 +57,50 @@ export default async function PickPersona() {
       ) : null}
 
       {/* Each person is a cheque leaf: a counterfoil, a perforation, and the leaf with
-          their own security print. Distinct by tint and content, not a card grid. */}
+          their own security print. Distinct by tint and content, not a card grid.
+          The link is the line at the foot of the leaf, "Continue as <person>": its
+          name is exactly what it shows (WCAG 2.5.3), the rest of the leaf is its
+          description, and its click area stretches over the whole slip (.slip-link).
+          A plain link: GET /api/session sets the persona and redirects. */}
       <ul className="mt-10 flex max-w-3xl flex-col gap-5">
         {PERSONAS.map((p) => {
           const h = money.get(p.key);
+          const id = (part: string) => `persona-${p.key}-${part}`;
           return (
-            <li key={p.key} data-persona-scope style={tintStyle(p)}>
-              <form action="/api/session" method="post">
-                <input type="hidden" name="persona" value={p.key} />
-                <button
-                  type="submit"
-                  className="group grid w-full border border-rule bg-surface text-left transition-colors hover:border-ink focus-visible:border-ink sm:grid-cols-[10rem_1fr]"
-                >
-                  <span className="flex flex-col gap-1 border-b-2 border-dashed border-rule px-4 py-3 text-sm text-ink-soft sm:border-r-2 sm:border-b-0">
-                    <span className="text-ink">{h ? h.accounts.join(' and ') : 'accounts unavailable'}</span>
-                  </span>
-                  <span className="security flex flex-col gap-2 border-y-0 px-5 pt-4 pb-5">
-                    <SecurityArt persona={p} />
-                    <span className="text-2xl font-semibold">{p.name}</span>
-                    <span className="text-ink-soft">{p.blurb}</span>
-                    <span className="mt-1 font-figures text-2xl">
-                      {h ? (
-                        <span className="amount-box inline-block">
-                          <Money paise={h.total} />
-                        </span>
-                      ) : (
-                        'balance unavailable'
-                      )}
+            <li
+              key={p.key}
+              data-persona-scope
+              style={tintStyle(p)}
+              className="group relative grid border border-rule bg-surface transition-colors hover:border-ink has-[a:focus-visible]:border-ink sm:grid-cols-[10rem_1fr]"
+            >
+              <div className="flex flex-col gap-1 border-b-2 border-dashed border-rule px-4 py-3 text-sm text-ink-soft sm:row-span-2 sm:border-r-2 sm:border-b-0">
+                <p id={id('accounts')} className="text-ink">
+                  {h ? h.accounts.join(' and ') : 'accounts unavailable'}
+                </p>
+              </div>
+              <div className="security flex flex-col gap-2 border-y-0 px-5 pt-4 pb-3">
+                <SecurityArt persona={p} />
+                <p className="text-2xl font-semibold">{p.name}</p>
+                <p id={id('blurb')} className="text-ink-soft">
+                  {p.blurb}
+                </p>
+                <p id={id('balance')} className="mt-1 font-figures text-2xl">
+                  {h ? (
+                    <span className="amount-box inline-block">
+                      <Money paise={h.total} />
                     </span>
-                    <span className="text-sm text-ink-soft group-hover:text-ink">Continue as {p.firstName}</span>
-                  </span>
-                </button>
-              </form>
+                  ) : (
+                    'balance unavailable'
+                  )}
+                </p>
+              </div>
+              <a
+                href={`/api/session?persona=${p.key}`}
+                aria-describedby={`${id('accounts')} ${id('blurb')} ${id('balance')}`}
+                className="slip-link px-5 pt-1 pb-4 text-sm text-ink-soft group-hover:text-ink"
+              >
+                Continue as {p.name}
+              </a>
             </li>
           );
         })}

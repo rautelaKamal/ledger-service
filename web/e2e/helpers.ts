@@ -3,7 +3,7 @@ import { expect, type Page } from '@playwright/test';
 
 export async function become(page: Page, name: 'Meera Iyer' | 'Arjun Rao' | 'Kavya Nair'): Promise<void> {
   await page.goto('/');
-  await page.getByRole('button', { name: new RegExp(name) }).click();
+  await page.getByRole('link', { name: `Continue as ${name}`, exact: true }).click();
   await expect(page).toHaveURL(/\/overview$/);
 }
 

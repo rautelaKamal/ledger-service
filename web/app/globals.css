@@ -205,11 +205,18 @@ code {
   .stamp-land { animation: none; transform: rotate(-6deg); }
 }
 
+/* A person slip on the landing page (app/page.tsx): the link is only the line
+   "Continue as <person>", so its name is what it shows; its click area stretches
+   over the whole slip, and so does its focus ring. */
+.slip-link::after { content: ''; position: absolute; inset: 0; z-index: 1; }
+.slip-link:focus-visible { outline: none; }
+.slip-link:focus-visible::after { outline: 2px solid var(--focus); outline-offset: 2px; }
+
 /* ── The one bold element: a cheque's security print behind the balance ──
  * A flat guilloche tile (public/security/band.svg), repeated at a fixed size so
  * the line weight never changes, painted with the person's banknote tint
  * (--tint, set inline from lib/personas.ts; decoration only, never text). In dark
- * mode it glows faintly, like security ink under a UV lamp. A line of microprint
+ * mode it shows in the toned tint, without glow, like security ink under a UV lamp. A line of microprint
  * (the person's name) runs along the bottom edge: a background image, not text. */
 .security { position: relative; isolation: isolate; border-block: 3px double var(--rule); }
 .security-art { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }

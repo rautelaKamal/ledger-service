@@ -396,3 +396,28 @@ test('14. the limits: the forms state them and refuse more before sending; the A
   expect(body.exchange.response.body.error).toEqual({ code: 'amount_over_limit', message: 'one top-up can be at most ₹1,00,000.00; this one is ₹1,00,000.01', details: { maxPaise: '10000000' } });
   expect(await totalBalance(page)).toBe(total);
 });
+
+test('15. the landing page: each person is a link named "Continue as …" that lands on their overview', async ({ page }) => {
+  for (const name of ['Meera Iyer', 'Arjun Rao', 'Kavya Nair'] as const) {
+    await page.goto('/');
+    const link = page.getByRole('link', { name: `Continue as ${name}`, exact: true });
+    // The rest of the leaf (their accounts, who they are, their balance) is its description.
+    await expect(link).toHaveAccessibleDescription(/₹[\d,]+\.\d{2}$/);
+    await link.click();
+    await expect(page).toHaveURL(/\/overview$/);
+    await expect(page.getByRole('heading', { name: `${name.split(' ')[0]}’s money` })).toBeVisible();
+  }
+  // From the keyboard too.
+  await page.goto('/');
+  await page.getByRole('link', { name: 'Continue as Kavya Nair', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/overview$/);
+
+  // No control on the landing page is just "button" or "link": every one has a name
+  // (and axe's button-name and link-name rules run in expectAccessible).
+  await page.goto('/');
+  for (const control of [...(await page.getByRole('button').all()), ...(await page.getByRole('link').all())]) {
+    await expect(control).toHaveAccessibleName(/\S/);
+  }
+  await expectAccessible(page);
+});
