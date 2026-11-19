@@ -29,7 +29,8 @@ export function paiseOf(text: string): bigint {
 
 export async function totalBalance(page: Page): Promise<bigint> {
   await page.goto('/overview');
-  return paiseOf((await page.locator('#balance-heading + p').innerText()).trim());
+  // The exact figure, not the (possibly still counting) digits on screen.
+  return BigInt((await page.locator('[data-balance="total"] [data-paise]').getAttribute('data-paise'))!);
 }
 
 /** The label of the first <option> whose text starts with `prefix` (labels carry balances that change). */

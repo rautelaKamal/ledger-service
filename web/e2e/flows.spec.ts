@@ -12,7 +12,7 @@ test('1. pick a person: the balance, what is in transit, the chart and the passb
 
   await become(page, 'Meera Iyer');
   await expect(page.getByRole('heading', { name: 'Meera’s money' })).toBeVisible();
-  await expect(page.locator('#balance-heading + p')).toHaveText(/^₹[\d,]+\.\d{2}$/);
+  await expect(page.locator('[data-balance="total"] [aria-hidden]')).toHaveText(/^₹[\d,]+\.\d{2}$/);
   await expect(page.getByRole('heading', { name: 'In transit, not in your balance' })).toBeVisible();
   await expect(page.getByText(/Balance at the end of each day, last 30 days/)).toBeVisible();
   const table = page.getByRole('table', { name: /Passbook/ });
@@ -233,4 +233,81 @@ test('9. fixes from browser testing: chart placeholder, quiet passbook, steady S
   const [amountBox, toBox] = [await page.getByLabel('Amount in rupees').boundingBox(), await page.getByLabel('To', { exact: true }).boundingBox()];
   expect(Math.abs(amountBox!.y - toBox!.y)).toBeLessThan(1);
   expect(Math.abs(amountBox!.height - toBox!.height)).toBeLessThan(1);
+});
+
+/** Every distinct figure the total shows during the next second (it counts, or it does not). */
+async function figuresDuringNextSecond(page: import('@playwright/test').Page): Promise<string[]> {
+  return page.evaluate(
+    () =>
+      new Promise<string[]>((resolve) => {
+        const seen = new Set<string>();
+        const start = performance.now();
+        const sample = () => {
+          const el = document.querySelector('[data-balance="total"] [aria-hidden]');
+          if (el?.textContent) seen.add(el.textContent);
+          if (performance.now() - start < 1000) requestAnimationFrame(sample);
+          else resolve([...seen]);
+        };
+        sample();
+      }),
+  );
+}
+
+async function sendFromSavings(page: import('@playwright/test').Page, rupees: string): Promise<void> {
+  await page.goto('/send');
+  await page.getByLabel('To', { exact: true }).selectOption({ label: 'Kavya Nair, Savings' });
+  await page.getByLabel('Amount in rupees').fill(rupees);
+  await page.getByRole('button', { name: `Send ₹${rupees}` }).click();
+  await expect(page.getByText(/^Sent\./)).toBeVisible();
+}
+
+test('10. motion answers the person: the balance counts after their own send; never with reduced motion or on a page load', async ({ page }) => {
+  await become(page, 'Meera Iyer');
+  const before = await totalBalance(page);
+  // The figure counts from what the person last SAW: wait until this page is live and has remembered it.
+  await page.waitForFunction(() => sessionStorage.getItem('ledger:shown:total:meera') !== null);
+
+  await sendFromSavings(page, '50.00');
+  await page.getByRole('link', { name: 'Overview' }).first().click(); // in-app navigation
+  const counted = await figuresDuringNextSecond(page);
+  expect(counted.length).toBeGreaterThan(2); // it counted through intermediate figures...
+  expect(await totalBalance(page)).toBe(before - 5_000n); // ...and ended exactly on the ledger's figure
+
+  // A full page load after the person's own send: the server already painted the
+  // new figure, so nothing jumps back to count (the hydration rule).
+  await page.waitForFunction(() => sessionStorage.getItem('ledger:shown:total:meera') !== null);
+  await sendFromSavings(page, '50.00');
+  await page.goto('/overview');
+  expect(await figuresDuringNextSecond(page)).toHaveLength(1);
+  expect(await totalBalance(page)).toBe(before - 10_000n);
+
+  // Reduced motion: the same action and an in-app navigation, no counting.
+  await page.waitForFunction((b) => sessionStorage.getItem('ledger:shown:total:meera') === b, String(before - 10_000n));
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await sendFromSavings(page, '50.00');
+  await page.getByRole('link', { name: 'Overview' }).first().click();
+  expect(await figuresDuringNextSecond(page)).toHaveLength(1);
+  expect(await totalBalance(page)).toBe(before - 15_000n);
+});
+
+test('11. the theme toggle reveals the new theme from the button; instantly with reduced motion', async ({ page }) => {
+  await become(page, 'Meera Iyer');
+  const isDark = () => page.evaluate(() => document.documentElement.classList.contains('dark'));
+  await page.evaluate(() => {
+    const d = document as Document & { startViewTransition?: (cb: () => void) => unknown; transitions?: number };
+    d.transitions = 0;
+    const original = d.startViewTransition?.bind(d);
+    if (original) d.startViewTransition = (cb) => ((d.transitions = (d.transitions ?? 0) + 1), original(cb));
+  });
+  const transitions = () => page.evaluate(() => (document as Document & { transitions?: number }).transitions ?? 0);
+
+  const wasDark = await isDark();
+  await page.getByRole('button', { name: /Switch to (dark|light) theme/ }).first().click();
+  await expect.poll(isDark).toBe(!wasDark);
+  expect(await transitions()).toBe(1); // the circular reveal ran as a view transition
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.getByRole('button', { name: /Switch to (dark|light) theme/ }).first().click();
+  await expect.poll(isDark).toBe(wasDark);
+  expect(await transitions()).toBe(1); // no transition: switched instantly
 });
