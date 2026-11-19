@@ -3,13 +3,16 @@
 import { Copy, RefreshCw } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useId, useState } from 'react';
+import { AnimatedMoney } from '@/components/animated-money';
 import { Money } from '@/components/money';
+import { SecurityArt } from '@/components/security-print';
 import { Stamp } from '@/components/stamp';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { WirePanel } from '@/components/wire-panel';
 import { formatPaise, parseRupees } from '@/lib/money';
+import { markMoneyMoved } from '@/lib/money-moved';
 import type { Account, WireExchange } from '@/lib/types';
 import type { Payee } from '@/lib/server/directory';
 
@@ -93,6 +96,7 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
     const r = await send();
     if (r) {
       setFirst(r);
+      if (r.exchange.response.status === 201) markMoneyMoved(); // the balance strip counts down to its new value
       router.refresh();
     }
   }
@@ -113,6 +117,17 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
 
   return (
     <div className="flex max-w-2xl flex-col gap-8">
+      {fromAccount ? (
+        <div className="security px-4 pt-3 pb-4 sm:px-6" aria-live="polite">
+          <SecurityArt />
+          <p className="text-ink-soft">Sending from {accountName}</p>
+          <p className="font-figures text-4xl leading-none font-semibold">
+            <span className="amount-box inline-block">
+              <AnimatedMoney paise={fromAccount.balancePaise} slot={`account:${fromAccount.id}`} />
+            </span>
+          </p>
+        </div>
+      ) : null}
       <form onSubmit={onSubmit} className="grid gap-5 sm:grid-cols-2" aria-describedby={`${ids}-key`}>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${ids}-from`}>From</Label>

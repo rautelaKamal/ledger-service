@@ -17,9 +17,11 @@
   --ink-soft: #46595d;
   --rule: #cbd5d2;
   --money-in: #17694d;
+  --money-out: #a14a3a; /* withdrawals in the phone's signed column: brick, apart from failed red (5.49:1) */
   --pending: #8a5708; /* the approved #a86a0c measured 4.12:1 on paper, under 4.5:1 */
   --failed: #b42318;
   --stamp: #5b3da6;
+  --printer: #2e4448; /* passbook entries, as a passbook printer prints them (9.6:1) */
 
   --background: var(--paper);
   --foreground: var(--ink);
@@ -51,9 +53,11 @@
   --ink-soft: #a3b5b3;
   --rule: #2a3b3f;
   --money-in: #4cc38a;
+  --money-out: #f2a48f;
   --pending: #e0a23a;
   --failed: #f0705f;
   --stamp: #a894f0;
+  --printer: #c3d1ce;
 
   --secondary: #1a2e33;
   --muted: #18292d;
@@ -68,9 +72,11 @@
   --color-ink-soft: var(--ink-soft);
   --color-rule: var(--rule);
   --color-money-in: var(--money-in);
+  --color-money-out: var(--money-out);
   --color-pending: var(--pending);
   --color-failed: var(--failed);
   --color-stamp: var(--stamp);
+  --color-printer: var(--printer);
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -163,4 +169,53 @@ code {
 }
 @media (prefers-reduced-motion: reduce) {
   .stamp-land { animation: none; transform: rotate(-6deg); }
+}
+
+/* ── The one bold element: a cheque's security print behind the balance ──
+ * A flat guilloche tile (public/security/band.svg), repeated at a fixed size so
+ * the line weight never changes, painted with the person's banknote tint
+ * (--tint, set inline from lib/personas.ts; decoration only, never text). In dark
+ * mode it glows faintly, like security ink under a UV lamp. A line of microprint
+ * (the person's name) runs along the bottom edge: a background image, not text. */
+.security { position: relative; isolation: isolate; border-block: 3px double var(--rule); }
+.security-art { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+.security-art > .lines {
+  position: absolute;
+  inset: 0;
+  background-color: var(--tint, var(--ink-soft));
+  opacity: 0.2;
+  mask-image: url(/security/band.svg);
+  mask-size: 160px 40px;
+  mask-repeat: repeat;
+}
+.security-art > .microprint {
+  position: absolute; left: 0; right: 0; bottom: 3px; height: 6px;
+  background-image: var(--microprint-light); background-repeat: repeat-x; background-size: auto 6px;
+  opacity: 0.8;
+}
+.dark .security-art { filter: drop-shadow(0 0 0.5px var(--tint-uv, var(--ink-soft))); }
+.dark .security-art > .lines { background-color: var(--tint-uv, var(--ink-soft)); opacity: var(--uv, 0.16); }
+.dark .security-art > .microprint { background-image: var(--microprint-dark); opacity: 0.5; }
+/* The cheque's amount box: the figure sits on clear paper, never on the print. */
+.amount-box { background: var(--paper); border: 1px solid var(--rule); padding: 0.1em 0.35em; }
+/* Phone: the band starts right under the top bar (no empty ruled strip above it). */
+@media (max-width: 639px) {
+  .security-hero { margin-top: -1.5rem; border-top: 0; }
+}
+
+/* ── The passbook, printed on a preprinted form ──
+ * Entries in printer ink; the form's column rules; the running balance is the
+ * strongest text. On a phone the two amount columns become one signed column. */
+.passbook tbody td { color: var(--printer); }
+.passbook .col-balance { color: var(--ink); font-weight: 600; }
+.passbook td + td,
+.passbook th + th { border-left: 1px solid color-mix(in oklab, var(--rule) 75%, transparent); padding-left: 0.75rem; }
+.money-out { color: var(--money-out); }
+
+/* The theme toggle's circular reveal (components/theme-toggle.tsx): the browser's
+   default cross-fade is replaced by one clip-path circle on the new snapshot. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
 }

@@ -1,6 +1,7 @@
 import { Money } from '@/components/money';
+import { SecurityArt } from '@/components/security-print';
 import { ThemeToggle } from '@/components/theme-toggle';
-import { PERSONAS } from '@/lib/personas';
+import { PERSONAS, tintStyle } from '@/lib/personas';
 import { reconciliationSentence } from '@/lib/server/describe';
 import { clientIdOf } from '@/lib/server/identity';
 import { getAccounts, getSystemStatus } from '@/lib/server/ledger';
@@ -8,12 +9,17 @@ import { sumPaise } from '@/lib/money';
 
 export const dynamic = 'force-dynamic';
 
-async function totals(): Promise<Map<string, bigint | null>> {
+interface Holdings {
+  total: bigint;
+  accounts: string[];
+}
+
+async function holdings(): Promise<Map<string, Holdings | null>> {
   const entries = await Promise.all(
     PERSONAS.map(async (p) => {
       try {
         const accounts = await getAccounts(clientIdOf(p));
-        return [p.key, sumPaise(accounts.map((a) => a.balancePaise))] as const;
+        return [p.key, { total: sumPaise(accounts.map((a) => a.balancePaise)), accounts: accounts.map((a) => a.name.split(', ').at(-1) ?? a.name) }] as const;
       } catch {
         return [p.key, null] as const;
       }
@@ -23,7 +29,7 @@ async function totals(): Promise<Map<string, bigint | null>> {
 }
 
 export default async function PickPersona() {
-  const [money, status] = await Promise.all([totals(), getSystemStatus().catch(() => null)]);
+  const [money, status] = await Promise.all([holdings(), getSystemStatus().catch(() => null)]);
   const recon = reconciliationSentence(status);
   const ledgerDown = [...money.values()].every((v) => v === null);
 
@@ -47,21 +53,37 @@ export default async function PickPersona() {
         </p>
       ) : null}
 
-      <ul className="mt-10 grid gap-4 sm:grid-cols-3">
+      {/* Each person is a cheque leaf: a counterfoil, a perforation, and the leaf with
+          their own security print. Distinct by tint and content, not a card grid. */}
+      <ul className="mt-10 flex max-w-3xl flex-col gap-5">
         {PERSONAS.map((p) => {
-          const total = money.get(p.key);
+          const h = money.get(p.key);
           return (
-            <li key={p.key}>
-              <form action="/api/session" method="post" className="h-full">
+            <li key={p.key} style={tintStyle(p)}>
+              <form action="/api/session" method="post">
                 <input type="hidden" name="persona" value={p.key} />
                 <button
                   type="submit"
-                  className="group flex h-full w-full flex-col items-start gap-2 border border-rule bg-surface px-5 pt-4 pb-5 text-left transition-colors hover:border-ink focus-visible:border-ink"
+                  className="group grid w-full border border-rule bg-surface text-left transition-colors hover:border-ink focus-visible:border-ink sm:grid-cols-[10rem_1fr]"
                 >
-                  <span className="text-2xl font-semibold">{p.name}</span>
-                  <span className="text-ink-soft">{p.blurb}</span>
-                  <span className="mt-auto pt-3 font-figures text-2xl">{total == null ? 'balance unavailable' : <Money paise={total} />}</span>
-                  <span className="text-sm text-ink-soft group-hover:text-ink">Continue as {p.firstName}</span>
+                  <span className="flex flex-col gap-1 border-b-2 border-dashed border-rule px-4 py-3 text-sm text-ink-soft sm:border-r-2 sm:border-b-0">
+                    <span className="text-ink">{h ? h.accounts.join(' and ') : 'accounts unavailable'}</span>
+                  </span>
+                  <span className="security flex flex-col gap-2 border-y-0 px-5 pt-4 pb-5">
+                    <SecurityArt persona={p} />
+                    <span className="text-2xl font-semibold">{p.name}</span>
+                    <span className="text-ink-soft">{p.blurb}</span>
+                    <span className="mt-1 font-figures text-2xl">
+                      {h ? (
+                        <span className="amount-box inline-block">
+                          <Money paise={h.total} />
+                        </span>
+                      ) : (
+                        'balance unavailable'
+                      )}
+                    </span>
+                    <span className="text-sm text-ink-soft group-hover:text-ink">Continue as {p.firstName}</span>
+                  </span>
                 </button>
               </form>
             </li>
