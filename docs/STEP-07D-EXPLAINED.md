@@ -56,6 +56,18 @@ motion). A balance counts to its new value after the person's own send or posted
 never on a page load and never because of a change made elsewhere. Nothing animates on
 entrance.
 
+**The page is the person's paper.** In light mode each person's pages are printed on their
+own lightly tinted cheque paper (blue, rose-taupe, green), so switching person changes the
+whole page; in dark mode every page is deep ink blue-black. The person's tint shows only on
+quiet lines: the nav marker, the chart line, the passbook's ruling and balance strip, focus
+rings.
+
+**Tabular figures, honestly.** The style guide had promised tabular figures from the start,
+and the CSS asked for them, but neither Hind nor Rajdhani has the feature: the browser
+silently ignored it. Each digit of an amount now sits in a fixed-width slot (the width of the
+face's widest digit), so columns line up digit under digit; screen readers read the plain
+amount. A test measures the slots and the column's right edge.
+
 Everything else is quiet: one
 type family (Hind, from the Indian Type Foundry, which has a real ₹ glyph), Rajdhani's
 squared digits only for the balance, tabular figures for every amount so columns line up

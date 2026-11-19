@@ -28,7 +28,7 @@ export function NavLinks({ variant }: { variant: 'rail' | 'tabs' }) {
                 variant === 'rail'
                   ? 'flex items-center gap-3 border-l-2 px-3 py-2'
                   : 'flex min-h-14 flex-col items-center justify-center gap-0.5 border-t-2 px-1 text-center text-[0.8125rem] leading-tight',
-                active ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink',
+                active ? 'border-tint-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink',
               )}
             >
               <Icon className="size-4 shrink-0" aria-hidden />

@@ -7,7 +7,8 @@ import { shortDay } from '@/lib/dates';
 import { formatPaise } from '@/lib/money';
 import type { BalanceDay } from '@/lib/types';
 
-const config = { balance: { label: 'Balance', color: 'var(--ink)' } } satisfies ChartConfig;
+// The line in the person's tint (their pages' quiet colour; 3.9:1 or more on their paper).
+const config = { balance: { label: 'Balance', color: 'var(--tint-ink)' } } satisfies ChartConfig;
 
 // Axis ticks in whole rupees with Indian grouping (₹1,20,000), never "1.2L".
 const tick = (rupees: number) => `₹${new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(rupees)}`;

@@ -11,17 +11,20 @@
  * amber AND hatched, never colour alone; failed is struck through.
  */
 :root {
-  --paper: #f5f7f6;
-  --surface: #fbfcfb;
-  --ink: #102a30;
-  --ink-soft: #46595d;
-  --rule: #cbd5d2;
+  /* Neutral cheque paper (no person chosen); each person's pages get their own (below). */
+  --paper: #f1f3f6;
+  --surface: #fafbfc;
+  --ink: #15203a; /* ink blue-black (14.5:1) */
+  --ink-soft: #4b566b; /* 6.6:1 */
+  --rule: #cdd3dd;
   --money-in: #17694d;
-  --money-out: #a14a3a; /* withdrawals in the phone's signed column: brick, apart from failed red (5.49:1) */
+  --money-out: #a14a3a; /* withdrawals in the phone's signed column: brick, apart from failed red */
   --pending: #8a5708; /* the approved #a86a0c measured 4.12:1 on paper, under 4.5:1 */
   --failed: #b42318;
   --stamp: #5b3da6;
-  --printer: #2e4448; /* passbook entries, as a passbook printer prints them (9.6:1) */
+  --printer: #2e3a52; /* passbook entries, as a passbook printer prints them (10:1) */
+  --tint-ink: var(--ink); /* a person's quiet colour: nav marker, chart line, ruling */
+  --focus: var(--stamp);
 
   --background: var(--paper);
   --foreground: var(--ink);
@@ -31,38 +34,65 @@
   --popover-foreground: var(--ink);
   --primary: var(--ink);
   --primary-foreground: var(--paper);
-  --secondary: #e6ecea;
+  --secondary: #e4e8ef;
   --secondary-foreground: var(--ink);
-  --muted: #e9eeec;
+  --muted: #e7ebf1;
   --muted-foreground: var(--ink-soft);
-  --accent: #e3e9e7;
+  --accent: #e1e6ee;
   --accent-foreground: var(--ink);
   --destructive: var(--failed);
   --border: var(--rule);
-  --input: #9fb0ac;
-  --ring: var(--stamp);
-  --chart-1: var(--ink);
+  --input: #9aa5b8;
+  --ring: var(--focus);
+  --chart-1: var(--tint-ink);
   --chart-2: var(--money-in);
   --radius: 0.375rem;
 }
 
+/* Dark: deep ink blue-black, the feel of paper under a UV lamp. */
 .dark {
-  --paper: #0f1d21;
-  --surface: #132529;
-  --ink: #e3ece9;
-  --ink-soft: #a3b5b3;
-  --rule: #2a3b3f;
+  --paper: #0b1120;
+  --surface: #111a2e;
+  --ink: #e6eaf4;
+  --ink-soft: #a7b1c8; /* 8.8:1 */
+  --rule: #26324d;
   --money-in: #4cc38a;
   --money-out: #f2a48f;
   --pending: #e0a23a;
   --failed: #f0705f;
   --stamp: #a894f0;
-  --printer: #c3d1ce;
+  --printer: #c9d1e4;
 
-  --secondary: #1a2e33;
-  --muted: #18292d;
-  --accent: #1d3237;
-  --input: #3d5257;
+  --secondary: #18233b;
+  --muted: #152038;
+  --accent: #1b2742;
+  --input: #3a4766;
+}
+
+/* A person's pages: their own cheque paper in light, their tint on the quiet
+   lines (nav marker, chart line, passbook ruling, focus). The derived tokens are
+   declared again here because a custom property resolves where it is declared. */
+[data-persona-scope] {
+  --paper: var(--p-paper);
+  --surface: var(--p-surface);
+  --rule: var(--p-rule);
+  --tint-ink: var(--tint);
+  --focus: var(--tint);
+  --background: var(--paper);
+  --card: var(--surface);
+  --popover: var(--surface);
+  --border: var(--rule);
+  --primary-foreground: var(--paper);
+  --ring: var(--focus);
+  --chart-1: var(--tint-ink);
+}
+.dark [data-persona-scope] {
+  --paper: #0b1120;
+  --surface: #111a2e;
+  --rule: #26324d;
+  /* Toned 30% towards soft ink: a bright tint alone on blue-black reads as an acid accent. */
+  --tint-ink: color-mix(in oklab, var(--tint-uv) 70%, var(--ink-soft));
+  --focus: var(--tint-ink);
 }
 
 @theme inline {
@@ -77,6 +107,7 @@
   --color-failed: var(--failed);
   --color-stamp: var(--stamp);
   --color-printer: var(--printer);
+  --color-tint-ink: var(--tint-ink);
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -131,7 +162,7 @@
     line-height: 1.55;
   }
   :focus-visible {
-    outline: 2px solid var(--stamp);
+    outline: 2px solid var(--focus);
     outline-offset: 2px;
   }
 }
@@ -143,11 +174,14 @@ code {
   overflow-wrap: anywhere;
 }
 
-/* Every amount: tabular figures, so columns of rupees line up digit under digit. */
-.money {
-  font-variant-numeric: tabular-nums lining-nums;
-  font-feature-settings: 'tnum' 1, 'lnum' 1;
-}
+/* Every amount: tabular figures, emulated (components/money.tsx): neither face has
+   a tnum feature, so each digit gets a slot as wide as the face's widest digit. */
+.money { --fig-w: 0.555em; } /* Hind's widest digit, any weight in use */
+.font-figures { --fig-w: 0.535em; } /* Rajdhani 600 */
+.figs .fig { display: inline-block; width: var(--fig-w); text-align: center; }
+/* A strike-through does not reach into inline blocks by itself: hand it down. */
+.figs,
+.figs .fig { text-decoration: inherit; }
 
 /* Pending: hatched, so it reads as "not yet" without relying on colour. */
 .hatch {
@@ -193,8 +227,9 @@ code {
   background-image: var(--microprint-light); background-repeat: repeat-x; background-size: auto 6px;
   opacity: 0.8;
 }
-.dark .security-art { filter: drop-shadow(0 0 0.5px var(--tint-uv, var(--ink-soft))); }
-.dark .security-art > .lines { background-color: var(--tint-uv, var(--ink-soft)); opacity: var(--uv, 0.16); }
+/* Dark: no glow; the band in the person's toned tint, a visible step up, so each
+   person is recognisable under the "UV lamp" too. */
+.dark .security-art > .lines { background-color: var(--tint-ink, var(--ink-soft)); opacity: var(--uv, 0.28); }
 .dark .security-art > .microprint { background-image: var(--microprint-dark); opacity: 0.5; }
 /* The cheque's amount box: the figure sits on clear paper, never on the print. */
 .amount-box { background: var(--paper); border: 1px solid var(--rule); padding: 0.1em 0.35em; }
@@ -207,9 +242,19 @@ code {
  * Entries in printer ink; the form's column rules; the running balance is the
  * strongest text. On a phone the two amount columns become one signed column. */
 .passbook tbody td { color: var(--printer); }
-.passbook .col-balance { color: var(--ink); font-weight: 600; }
+/* The page's faint horizontal ruling, in the person's tint. */
+.passbook tbody tr { border-bottom: 1px solid color-mix(in oklab, var(--tint-ink) 22%, var(--paper)); }
+.passbook tbody tr.day { border-bottom: 0; }
 .passbook td + td,
-.passbook th + th { border-left: 1px solid color-mix(in oklab, var(--rule) 75%, transparent); padding-left: 0.75rem; }
+.passbook th + th { border-left: 1px solid color-mix(in oklab, var(--tint-ink) 16%, var(--paper)); padding-left: 0.75rem; }
+/* The running balance: the strongest text, on a slightly darker strip down the page. */
+.passbook .col-balance {
+  color: var(--ink);
+  font-weight: 600;
+  background: color-mix(in oklab, var(--tint-ink) 7%, var(--paper));
+  padding-right: 0.5rem;
+}
+.dark .passbook .col-balance { background: color-mix(in oklab, var(--tint-ink) 12%, var(--paper)); }
 .money-out { color: var(--money-out); }
 
 /* The theme toggle's circular reveal (components/theme-toggle.tsx): the browser's

@@ -1,6 +1,7 @@
 'use client';
 
 import { useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { Figures } from '@/components/money';
 import { formatPaise } from '@/lib/money';
 import { lastShown, moneyMovedRecently, remember } from '@/lib/money-moved';
 
@@ -58,7 +59,8 @@ export function AnimatedMoney({ paise, slot, label }: { paise: string; slot: str
   return (
     <span data-paise={target.toString()} data-slot={slot}>
       <span aria-hidden className="money whitespace-nowrap">
-        {formatPaise(shown)}
+        {/* Already hidden from assistive technology: the final amount is read below. */}
+        <Figures text={formatPaise(shown)} spoken={false} />
       </span>
       <span className="sr-only">{label ? `${label} ` : ''}{formatPaise(target)}</span>
     </span>
