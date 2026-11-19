@@ -69,8 +69,10 @@ name, a background image, not text) runs along the bottom edge.
 Where it appears: wherever a balance is the subject: the Overview header, the
 account strips on Send and Top up, and the person slips on the landing page (a
 counterfoil, a perforation, the leaf). Nowhere else. On a slip the link is the line at
-the foot of the leaf, "Continue as Meera Iyer": its click area and focus ring cover
-the whole slip, and the rest of the slip is its description.
+the foot of the leaf, "Continue as Meera Iyer", the slip's main action: larger than the
+slip's own text, in ink, underlined in the person's tint (a link, never a boxed button).
+Its click area and focus ring cover the whole slip, and the rest of the slip is its
+description.
 
 ## Rules
 
@@ -93,6 +95,10 @@ the whole slip, and the rest of the slip is its description.
    every screen). Every control is named by what it shows (WCAG 2.5.3), and a name that
    depends on the theme follows the theme on screen from the first paint, not a guess
    made on the server.
-7. Banned (they read as generated): cream + serif + terracotta; near-black with one acid
+7. Forms: Send and Top up are one form (two columns, the same fields, one line under
+   the amount for its hint or its problem). A field's problem is said once, under the
+   field; the submit button waits for a valid amount; the box below the button is for
+   what the server answered. One name per thing: "Top up", "Under the hood".
+8. Banned (they read as generated): cream + serif + terracotta; near-black with one acid
    accent; identical rounded cards with one grey shadow; decorative gradients; ALL-CAPS
    eyebrow labels; "A · B · C" meta strings; "→" on buttons; fade-up entrances.

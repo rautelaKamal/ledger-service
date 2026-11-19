@@ -226,6 +226,18 @@ clicks and keep state; they are shipped as JavaScript).
   the session, so the slips stay plain links. A test hovers over Arjun's slip and checks
   that nothing fetched `/api/session` and the person is still Meera; with a prefetching
   Next.js `<Link>` instead, all three people were fetched the moment they were on screen.
+- **The demo assistant answered questions it does not know**: "How much did I send to
+  Arjun this month?" and "Show me Arjun's balance" both got Meera's total, stamped
+  Verified, because any "how much" or "balance" matched. It now answers only questions it
+  clearly supports; anything else gets the list of what it answers, a question about
+  someone else's money is refused before any data is read, and neither carries a stamp.
+- **Seed notes that did not fit the payee** ("tea and snacks" at the power company): each
+  shop now has its own notes, and `demo:check` fails on one that does not fit.
+- **One key generator**: "Start a new transfer" made a bare UUID. Every key the forms send
+  now comes from `lib/keys.ts`, as `web-transfer-…` or `web-topup-…`.
+- **One form, one name**: Top up now has Send's layout and amount field, a field's problem
+  is said once under the field, the button waits for a valid amount, and the pages say
+  "Top up" and "Under the hood" everywhere.
 - **Tests could have written into the browsable demo**: Playwright reused any server already
   listening on its ports, and the demo uses the same ones. It now always starts its own, so
   a running demo fails the run at once instead.
