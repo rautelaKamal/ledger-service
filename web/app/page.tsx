@@ -61,7 +61,9 @@ export default async function PickPersona() {
           The link is the line at the foot of the leaf, "Continue as <person>": its
           name is exactly what it shows (WCAG 2.5.3), the rest of the leaf is its
           description, and its click area stretches over the whole slip (.slip-link).
-          A plain link: GET /api/session sets the persona and redirects. */}
+          A plain link: GET /api/session sets the persona and redirects. Keep it a plain
+          <a>, never next/link: a Link prefetches its target (in view or on hover), and
+          prefetching this one would switch the person behind their back (test 18). */}
       <ul className="mt-10 flex max-w-3xl flex-col gap-5">
         {PERSONAS.map((p) => {
           const h = money.get(p.key);

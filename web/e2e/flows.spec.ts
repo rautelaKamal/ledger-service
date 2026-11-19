@@ -515,3 +515,26 @@ test('17. an amount is in the page once: copying it, finding it and hearing it a
     for (const a of amounts) expect(a.trim(), path).toMatch(/^[+−]?₹[\d,]+\.\d{2}$/);
   }
 });
+
+test('18. hovering a person never switches the person: the slips are plain links that nothing prefetches', async ({ page }) => {
+  await become(page, 'Meera Iyer');
+  const sessionRequests: string[] = [];
+  page.on('request', (r) => {
+    if (new URL(r.url()).pathname === '/api/session') sessionRequests.push(`${r.method()} ${r.url()}`);
+  });
+  await page.goto('/');
+  await page.waitForLoadState('networkidle');
+  // No speculation rules (browser prefetch or prerender) on the page.
+  await expect(page.locator('script[type="speculationrules"]')).toHaveCount(0);
+
+  // Hover Arjun's slip, its link and the slip around it, and give any prefetch time to fire.
+  const arjun = page.getByRole('link', { name: 'Continue as Arjun Rao', exact: true });
+  await arjun.hover();
+  await page.getByRole('listitem').filter({ has: arjun }).hover(); // the slip's middle: its stretched click area
+  await page.waitForTimeout(1_500);
+  await page.waitForLoadState('networkidle');
+  expect(sessionRequests).toEqual([]);
+
+  await page.goto('/overview');
+  await expect(page.getByRole('heading', { name: 'Meera’s money' })).toBeVisible();
+});
