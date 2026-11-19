@@ -311,3 +311,24 @@ test('11. the theme toggle reveals the new theme from the button; instantly with
   await expect.poll(isDark).toBe(wasDark);
   expect(await transitions()).toBe(1); // no transition: switched instantly
 });
+
+test('12. nothing scrolls sideways on a 360 px wide phone, on any screen', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 740 });
+  const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  await page.goto('/');
+  expect(await overflow(), 'the persona picker').toBe(0);
+  await become(page, 'Arjun Rao'); // the largest amounts, the longest names
+  for (const path of ['/overview', '/send', '/topup', '/assistant', '/system']) {
+    await page.goto(path);
+    await page.waitForLoadState('networkidle');
+    expect(await overflow(), path).toBe(0);
+  }
+  // With the widest content each screen can show: an answer with sources, a sent transfer with its replay.
+  await page.goto('/assistant');
+  await page.getByRole('button', { name: 'Did my recent top-ups go through?' }).click();
+  await expect(page.getByText('Verified ✓')).toBeVisible();
+  expect(await overflow(), 'an answer with sources').toBe(0);
+  await page.goto('/send');
+  await page.getByLabel('Amount in rupees').fill('1,23,456.78');
+  expect(await overflow(), 'send with a long amount').toBe(0);
+});
