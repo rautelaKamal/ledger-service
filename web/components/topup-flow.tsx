@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { secondsLabel } from '@/lib/dates';
+import { newKey } from '@/lib/keys';
 import { formatPaise, parseRupees } from '@/lib/money';
 import { markMoneyMoved } from '@/lib/money-moved';
 import type { Account, Topup } from '@/lib/types';
@@ -280,7 +281,7 @@ export function TopupFlow({ accounts, maxPaise, initialTopupId, initialKey }: { 
               setStalled(false);
               setError(null);
               setAmount('');
-              setKey(`web-topup-${crypto.randomUUID()}`);
+              setKey(newKey('topup'));
               router.replace('/topup');
             }}
           >

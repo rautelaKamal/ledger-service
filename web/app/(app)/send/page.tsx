@@ -1,8 +1,8 @@
 import type { Metadata } from 'next';
-import { randomUUID } from 'node:crypto';
 import { redirect } from 'next/navigation';
 import { Notice } from '@/components/notice';
 import { SendForm } from '@/components/send-form';
+import { newKey } from '@/lib/keys';
 import { payeesFor } from '@/lib/server/directory';
 import { clientIdOf, currentPersona } from '@/lib/server/identity';
 import { getAccounts, getLimits } from '@/lib/server/ledger';
@@ -27,7 +27,7 @@ export default async function SendPage() {
           A transfer is posted the moment it is accepted: one debit, one credit, in one database transaction. Send one, then send exactly the same request again.
         </p>
       </div>
-      <SendForm accounts={accounts} payees={payees} maxPaise={limits.transferMaxPaise} initialKey={`web-${randomUUID()}`} />
+      <SendForm accounts={accounts} payees={payees} maxPaise={limits.transferMaxPaise} initialKey={newKey('transfer')} />
     </div>
   );
 }

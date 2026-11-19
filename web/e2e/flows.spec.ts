@@ -601,3 +601,39 @@ test('20. the demo assistant answers only what it knows: anything else gets the 
   expect(twice.verified).toBe(true);
   expect(twice.answer).toMatch(/^You cannot pay twice/);
 });
+
+test('21. every key the forms send comes from one generator, with its form\'s prefix', async ({ page }) => {
+  await become(page, 'Kavya Nair');
+  const sent: string[] = [];
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && /\/api\/(transfers|topups)$/.test(new URL(r.url()).pathname)) sent.push((r.postDataJSON() as { idempotencyKey: string }).idempotencyKey);
+  });
+  const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+  const TRANSFER = new RegExp(`^web-transfer-${uuid}$`);
+  const TOPUP = new RegExp(`^web-topup-${uuid}$`);
+  const shown = async () => (await page.locator('code').first().innerText()).trim();
+
+  await page.goto('/send');
+  expect(await shown()).toMatch(TRANSFER); // made on the server with the page
+  await page.getByRole('button', { name: 'New key' }).click();
+  expect(await shown()).toMatch(TRANSFER); // made in the browser
+  await page.getByLabel('Amount in rupees').fill('1.00');
+  await page.getByRole('button', { name: 'Send ₹1.00' }).click();
+  await expect(page.getByText(/^Sent\./)).toBeVisible();
+  await page.getByRole('button', { name: 'Start a new transfer' }).click();
+  expect(await shown()).toMatch(TRANSFER); // the review found a bare UUID here
+
+  await page.goto('/topup');
+  for (let i = 0; i < 2; i++) {
+    await page.getByLabel('Amount in rupees').fill('1.00');
+    await page.getByRole('button', { name: 'Request a ₹1.00 top-up' }).click();
+    await page.getByRole('button', { name: 'Approve as the bank' }).click();
+    await expect(page.getByText(/entered in the passbook/)).toBeVisible();
+    if (i === 0) await page.getByRole('button', { name: /^(Add money|Top up) again$/ }).click();
+  }
+  expect(sent).toHaveLength(3);
+  expect(sent[0]).toMatch(TRANSFER);
+  expect(sent[1]).toMatch(TOPUP);
+  expect(sent[2]).toMatch(TOPUP);
+  expect(new Set(sent).size).toBe(3);
+});

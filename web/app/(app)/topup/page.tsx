@@ -1,8 +1,8 @@
 import type { Metadata } from 'next';
-import { randomUUID } from 'node:crypto';
 import { redirect } from 'next/navigation';
 import { Notice } from '@/components/notice';
 import { TopupFlow } from '@/components/topup-flow';
+import { newKey } from '@/lib/keys';
 import { clientIdOf, currentPersona } from '@/lib/server/identity';
 import { getAccounts, getLimits } from '@/lib/server/ledger';
 
@@ -26,7 +26,7 @@ export default async function TopupPage({ searchParams }: { searchParams: Promis
           A top-up is not money until the bank says so. It waits as pending, outside your balance, until the provider&rsquo;s signed webhook arrives.
         </p>
       </div>
-      <TopupFlow key={id ?? 'new'} accounts={accounts} maxPaise={limits.topupMaxPaise} initialTopupId={id} initialKey={`web-topup-${randomUUID()}`} />
+      <TopupFlow key={id ?? 'new'} accounts={accounts} maxPaise={limits.topupMaxPaise} initialTopupId={id} initialKey={newKey('topup')} />
     </div>
   );
 }

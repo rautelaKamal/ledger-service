@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { WirePanel } from '@/components/wire-panel';
+import { newKey } from '@/lib/keys';
 import { formatPaise, parseRupees } from '@/lib/money';
 import { markMoneyMoved } from '@/lib/money-moved';
 import type { Account, WireExchange } from '@/lib/types';
@@ -112,7 +113,7 @@ export function SendForm({ accounts, payees, maxPaise, initialKey }: { accounts:
     setError(null);
     setAmount('');
     setNote('');
-    setKey(crypto.randomUUID());
+    setKey(newKey('transfer'));
   }
 
   const status = (r: Result) => r.exchange.response.status;
@@ -197,7 +198,7 @@ export function SendForm({ accounts, payees, maxPaise, initialKey }: { accounts:
             <Copy className="size-4" aria-hidden /> Copy
           </Button>
           {!locked ? (
-            <Button type="button" variant="ghost" size="sm" onClick={() => setKey(crypto.randomUUID())}>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setKey(newKey('transfer'))}>
               <RefreshCw className="size-4" aria-hidden /> New key
             </Button>
           ) : null}
