@@ -100,7 +100,7 @@ export async function seedDemo(client: pg.ClientBase): Promise<string[] | null> 
     return new Date(when).toISOString();
   };
 
-  async function move(kind: 'transfer' | 'topup', from: string, to: string, paise: bigint, when: string, note: string | null): Promise<void> {
+  async function move(kind: 'transfer' | 'topup' | 'opening', from: string, to: string, paise: bigint, when: string, note: string | null): Promise<void> {
     const debitId = from === 'bank' ? bankId : ids.get(from)!;
     const creditId = ids.get(to)!;
     const tx = await client.query<{ id: string }>(`INSERT INTO transactions (kind, note, created_at) VALUES ($1, $2, $3) RETURNING id`, [kind, note, when]);
@@ -139,10 +139,12 @@ export async function seedDemo(client: pg.ClientBase): Promise<string[] | null> 
     await client.query(`UPDATE transactions SET status = 'failed' WHERE id = $1`, [txId]);
   }
 
-  // Opening money, 30 days ago.
+  // Opening money, 30 days ago. Arjun's shop account came with money it already held:
+  // an opening balance (migration 013), as a passbook shows it, not a top-up nobody
+  // requested; the per-request top-up limit (src/limits.ts) is for requests.
   await move('topup', 'bank', 'meera:Savings', 85_000_00n, at(30, 10), 'salary');
   await move('topup', 'bank', 'meera:Current', 20_000_00n, at(30, 11), null);
-  await move('topup', 'bank', 'arjun:Shop', 2_40_000_00n, at(30, 9), 'opening float');
+  await move('opening', 'bank', 'arjun:Shop', 2_40_000_00n, at(30, 9), 'balance brought forward');
   await move('topup', 'bank', 'arjun:Personal', 30_000_00n, at(30, 12), null);
   await move('topup', 'bank', 'kavya:Savings', 12_000_00n, at(30, 18), 'pocket money');
   await move('topup', 'bank', 'chaos:A', 10_000_00n, at(30, 3), 'chaos test float');

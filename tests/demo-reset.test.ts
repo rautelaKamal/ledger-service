@@ -97,3 +97,36 @@ test('3. the check is recorded like any reconciliation run, so "last reconciliat
   expect(last.rows[0]).toMatchObject({ ok: true, problems: 0 });
   expect(last.rows[0]!.age).toBeLessThan(60);
 });
+
+test('4. Arjun\'s shop starts with an opening balance, not a top-up: double-entry from bank settlement; only the owner may record one', async () => {
+  const opening = await owner.query(
+    `SELECT t.kind, t.status, t.note,
+            (SELECT a.name FROM entries e JOIN accounts a ON a.id = e.account_id WHERE e.transaction_id = t.id AND e.direction = 'debit') AS debit,
+            (SELECT a.name FROM entries e JOIN accounts a ON a.id = e.account_id WHERE e.transaction_id = t.id AND e.direction = 'credit') AS credit,
+            (SELECT e.amount_paise::text FROM entries e WHERE e.transaction_id = t.id AND e.direction = 'credit') AS amount,
+            (SELECT count(*)::int FROM topups u WHERE u.transaction_id = t.id) AS topups
+       FROM transactions t WHERE t.kind = 'opening'`,
+  );
+  expect(opening.rows).toEqual([
+    { kind: 'opening', status: 'posted', note: 'balance brought forward', debit: 'bank_settlement', credit: 'Arjun Rao, Shop', amount: '24000000', topups: 0 },
+  ]);
+  expect(SEED_BALANCES['Arjun Rao, Shop']).toBe(2_54_671_25n); // his balance is what it was
+
+  // The API's role cannot record one.
+  await expect(app.query(`INSERT INTO transactions (kind) VALUES ('opening')`)).rejects.toThrow(/only ledger_owner records an opening balance/);
+
+  // The demo check holds the demo to the limits the forms state.
+  const [kavya] = (await owner.query<{ id: string }>(`SELECT id FROM accounts WHERE owner_client_id = 'demo-kavya' LIMIT 1`)).rows;
+  await withCommit(owner, async (c) => {
+    const tx = await c.query<{ id: string }>(`INSERT INTO transactions (kind) VALUES ('topup') RETURNING id`);
+    await c.query(`INSERT INTO topups (transaction_id, account_id, currency, amount_paise) VALUES ($1, $2, 'INR', 10000001)`, [tx.rows[0]!.id, kavya!.id]);
+  });
+  expect((await verifyDemo(owner)).problems).toContain('Kavya Nair, Savings: a topup of 10000001 paise, above the limit');
+  const client = await owner.connect();
+  try {
+    await resetDemo(client);
+  } finally {
+    client.release();
+  }
+  expect(await verifyDemo(owner)).toEqual({ ok: true, problems: [] });
+});

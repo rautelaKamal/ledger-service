@@ -18,7 +18,7 @@ export interface Account {
 
 export interface PassbookRow {
   id: string;
-  kind: 'transfer' | 'topup' | 'refund';
+  kind: 'transfer' | 'topup' | 'refund' | 'opening';
   status: 'pending' | 'posted' | 'failed';
   note: string | null;
   createdAt: string;

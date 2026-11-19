@@ -538,3 +538,21 @@ test('18. hovering a person never switches the person: the slips are plain links
   await page.goto('/overview');
   await expect(page.getByRole('heading', { name: 'Meera’s money' })).toBeVisible();
 });
+
+test('19. a passbook starts with its opening balance: Arjun\'s shop money was brought forward, not topped up', async ({ page }) => {
+  await become(page, 'Arjun Rao'); // the passbook opens on his Shop account
+  const table = page.getByRole('table', { name: /Passbook/ });
+  await expect(table.getByRole('row').nth(2)).toBeVisible();
+  const older = page.getByRole('button', { name: 'Show older entries' });
+  while (await older.isVisible()) {
+    const before = await table.getByRole('row').count();
+    await older.click();
+    await expect.poll(() => table.getByRole('row').count()).toBeGreaterThan(before);
+  }
+  // The oldest entry, at the foot of the newest-first passbook.
+  const first = table.locator('tbody tr:not(.day)').last();
+  await expect(first).toContainText('Opening balance');
+  await expect(first.locator('[data-paise="24000000"]:visible')).toHaveCount(2); // the deposit, and the balance it starts
+  // Not a top-up anywhere: no top-up row carries the ₹2,40,000.00.
+  await expect(table.locator('tbody tr', { hasText: /^Top-up/ }).filter({ has: page.locator('[data-paise="24000000"]') })).toHaveCount(0);
+});

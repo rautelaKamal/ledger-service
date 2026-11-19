@@ -13,6 +13,8 @@ const features = tableFeatures({ columnMeta: {} as { align?: 'right'; className?
 const column = createColumnHelper<typeof features, PassbookRow>();
 
 function particulars(r: PassbookRow): string {
+  // Money the account already held when its history here begins (migration 013).
+  if (r.kind === 'opening') return 'Opening balance';
   if (r.kind === 'topup') return r.status === 'failed' ? 'Top-up, failed' : r.status === 'pending' ? 'Top-up, waiting for the bank' : 'Top-up';
   if (!r.counterparty) return 'Transfer';
   const out = BigInt(r.amountPaise) < 0n;

@@ -63,7 +63,7 @@ export function decodeCursor(cursor: string): { createdAt: string; id: string } 
 
 interface PassbookRow {
   id: string;
-  kind: 'transfer' | 'topup' | 'refund';
+  kind: 'transfer' | 'topup' | 'refund' | 'opening';
   status: 'pending' | 'posted' | 'failed';
   note: string | null;
   created_at: string;

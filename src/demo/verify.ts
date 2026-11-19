@@ -4,6 +4,7 @@
 // what the web app says about the last reconciliation ("0 problems, checked at
 // 17:42 IST") includes this check.
 import type { Pool } from '../db.js';
+import { TOPUP_MAX_PAISE, TRANSFER_MAX_PAISE } from '../limits.js';
 import { recordRun, runReconciliation } from '../reconcile/run.js';
 import { DEMO_CLIENTS, SEED_BALANCES } from './seed.js';
 
@@ -25,6 +26,30 @@ export async function verifyDemo(pool: Pool): Promise<DemoCheck> {
     else if (got !== expected) problems.push(`${name}: ${got} paise, the seed says ${expected}`);
   }
   for (const name of actual.keys()) if (!(name in SEED_BALANCES)) problems.push(`${name}: not in the seed`);
+
+  // The demo's history keeps the limits the forms state (src/limits.ts): no top-up
+  // or transfer above them. Money an account already held arrives as its opening
+  // balance (kind 'opening'), which is not a request and has no limit.
+  const over = await pool.query<{ kind: string; name: string; amount: string }>(
+    `SELECT t.kind, a.name, e.amount_paise::text AS amount
+       FROM transactions t
+       JOIN entries e ON e.transaction_id = t.id AND e.direction = 'credit'
+       JOIN accounts a ON a.id = e.account_id
+      WHERE a.owner_client_id = ANY($1)
+        AND ((t.kind = 'topup' AND e.amount_paise > $2) OR (t.kind = 'transfer' AND e.amount_paise > $3))
+     UNION ALL
+     SELECT 'topup', a.name, u.amount_paise::text
+       FROM topups u JOIN accounts a ON a.id = u.account_id
+      WHERE a.owner_client_id = ANY($1) AND u.amount_paise > $2`,
+    [[...DEMO_CLIENTS], TOPUP_MAX_PAISE.toString(), TRANSFER_MAX_PAISE.toString()],
+  );
+  for (const r of new Set(over.rows.map((r) => `${r.name}: a ${r.kind} of ${r.amount} paise, above the limit`))) problems.push(r);
+  const opening = await pool.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM transactions t JOIN entries e ON e.transaction_id = t.id AND e.direction = 'credit'
+       JOIN accounts a ON a.id = e.account_id
+      WHERE t.kind = 'opening' AND t.status = 'posted' AND a.name = 'Arjun Rao, Shop'`,
+  );
+  if (opening.rows[0]!.n !== 1) problems.push(`Arjun Rao, Shop: ${opening.rows[0]!.n} opening balances, the seed has 1`);
 
   const report = await runReconciliation(pool);
   await recordRun(pool, report);
