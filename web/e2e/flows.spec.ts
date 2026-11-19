@@ -421,3 +421,18 @@ test('15. the landing page: each person is a link named "Continue as …" that l
   }
   await expectAccessible(page);
 });
+
+test('16. the theme button names the theme it switches to, also on a first visit that follows the system', async ({ page }) => {
+  for (const scheme of ['dark', 'light'] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
+    await page.goto('/'); // nothing chosen yet: the page follows the system
+    expect(await page.evaluate(() => (document.documentElement.classList.contains('dark') ? 'dark' : 'light'))).toBe(scheme);
+    const other = scheme === 'dark' ? 'light' : 'dark';
+    await expect(page.getByRole('button', { name: `Switch to ${other} theme`, exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: `Switch to ${scheme} theme`, exact: true })).toHaveCount(0);
+  }
+  // After switching, it names the other one.
+  await page.getByRole('button', { name: 'Switch to dark theme', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(true);
+  await expect(page.getByRole('button', { name: 'Switch to light theme', exact: true })).toBeVisible();
+});
