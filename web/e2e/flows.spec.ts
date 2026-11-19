@@ -6,8 +6,11 @@ test.describe.configure({ mode: 'serial' });
 test('1. pick a person: the balance, what is in transit, the chart and the passbook', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByText('Demo: fictional people, no real money.')).toBeVisible();
-  // Claims about reconciliation come from data: this stack has no schedule.
+  // Claims about reconciliation come from data: this stack has no schedule, and the
+  // last run is the demo check the global setup just ran (it is recorded like any run).
   await expect(page.getByText('Nothing runs it on a schedule in this environment.')).toBeVisible();
+  await expect(page.getByText(/^Last reconciliation: 0 problems, checked at \d{2}:\d{2} IST\.$/)).toBeVisible();
+  await expect(page.getByText('Reconciliation has not run here yet.')).toHaveCount(0);
   await expectAccessible(page);
 
   await become(page, 'Meera Iyer');

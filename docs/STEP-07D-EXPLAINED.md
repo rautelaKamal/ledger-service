@@ -81,7 +81,9 @@ the five reconciliation checks by name.
 
 **Every claim is true for the environment it runs in.** The pages never say "reconciled
 every night" from habit. They read the last recorded run ("Last reconciliation: 0 problems,
-4 min ago") and mention a schedule only when `RECONCILE_SCHEDULE` says one exists. It is set
+checked at 17:42 IST. That was 4 min ago."): a "Run reconciliation now", the CronJob, or a
+`demo:check` (which records its run like any other) and mention a schedule only when
+`RECONCILE_SCHEDULE` says one exists. It is set
 in Kubernetes, where a CronJob runs at 02:00 in `Asia/Kolkata`, and nowhere else. Compose has
 no such job, so the page there says "Nothing runs it on a schedule in this environment."
 Likewise "Grafana is not linked in this environment" when no URL is configured, and the

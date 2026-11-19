@@ -84,3 +84,16 @@ test('2. afterwards the ledger is append-only again: the triggers the reset lift
   const disabled = await owner.query(`SELECT count(*)::int AS n FROM pg_trigger WHERE NOT tgisinternal AND tgenabled <> 'O'`);
   expect(disabled.rows[0]).toEqual({ n: 0 });
 });
+
+test('3. the check is recorded like any reconciliation run, so "last reconciliation" includes it', async () => {
+  const before = (await owner.query<{ n: number }>(`SELECT count(*)::int AS n FROM reconciliation_runs`)).rows[0]!.n;
+  expect((await verifyDemo(owner)).ok).toBe(true);
+  const runs = await owner.query<{ n: number }>(`SELECT count(*)::int AS n FROM reconciliation_runs`);
+  expect(runs.rows[0]!.n).toBe(before + 1);
+  const last = await owner.query<{ ok: boolean; problems: number; age: number }>(
+    `SELECT ok, jsonb_array_length(problems) AS problems, extract(epoch FROM now() - ran_at)::int AS age
+       FROM reconciliation_runs ORDER BY ran_at DESC, id DESC LIMIT 1`,
+  );
+  expect(last.rows[0]).toMatchObject({ ok: true, problems: 0 });
+  expect(last.rows[0]!.age).toBeLessThan(60);
+});
