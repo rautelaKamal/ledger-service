@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, expect, test } from 'vitest';
 import { createPool, type Pool } from '../src/db.js';
 import { resetDemo } from '../src/demo/reset.js';
-import { DEMO_CLIENTS, SEED_BALANCES, seedDemo } from '../src/demo/seed.js';
+import { DEMO_CLIENTS, PAYEE_NOTES, SEED_BALANCES, seedDemo } from '../src/demo/seed.js';
 import { verifyDemo } from '../src/demo/verify.js';
 import { runReconciliation } from '../src/reconcile/run.js';
 import { PG, balanceOf, createAccount, fundAccount, withCommit } from './helpers.js';
@@ -122,6 +122,29 @@ test('4. Arjun\'s shop starts with an opening balance, not a top-up: double-entr
     await c.query(`INSERT INTO topups (transaction_id, account_id, currency, amount_paise) VALUES ($1, $2, 'INR', 10000001)`, [tx.rows[0]!.id, kavya!.id]);
   });
   expect((await verifyDemo(owner)).problems).toContain('Kavya Nair, Savings: a topup of 10000001 paise, above the limit');
+  const client = await owner.connect();
+  try {
+    await resetDemo(client);
+  } finally {
+    client.release();
+  }
+  expect(await verifyDemo(owner)).toEqual({ ok: true, problems: [] });
+});
+
+test('5. every payment to a shop carries a note that fits the shop, and the demo check fails on one that does not', async () => {
+  const seeded = await owner.query<{ shop: string; note: string | null }>(
+    `SELECT DISTINCT a.name AS shop, t.note FROM transactions t
+       JOIN entries e ON e.transaction_id = t.id AND e.direction = 'credit' JOIN accounts a ON a.id = e.account_id
+      WHERE t.kind = 'transfer' AND a.owner_client_id = 'demo-merchants'`,
+  );
+  expect(seeded.rows.length).toBeGreaterThan(5);
+  for (const r of seeded.rows) expect(PAYEE_NOTES[r.shop as keyof typeof PAYEE_NOTES], `${r.shop}: ${r.note}`).toContain(r.note);
+
+  // Tea and snacks paid to the power company: the check names it.
+  const [meera] = (await owner.query<{ id: string }>(`SELECT id FROM accounts WHERE name = 'Meera Iyer, Savings'`)).rows;
+  const [power] = (await owner.query<{ id: string }>(`SELECT id FROM accounts WHERE name = 'Coastal Power Co.'`)).rows;
+  expect((await postTransfer(server.url, { key: 'notes-1', clientId: 'demo-meera', body: { fromAccountId: meera!.id, toAccountId: power!.id, amountPaise: '100', note: 'tea and snacks' } })).status).toBe(201);
+  expect((await verifyDemo(owner)).problems).toContain('Coastal Power Co.: the note "tea and snacks" does not fit this payee');
   const client = await owner.connect();
   try {
     await resetDemo(client);

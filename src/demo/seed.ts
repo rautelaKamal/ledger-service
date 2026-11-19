@@ -46,7 +46,16 @@ const PEOPLE: Record<Who, { client: string; name: string; accounts: string[] }> 
   arjun: { client: 'demo-arjun', name: 'Arjun Rao', accounts: ['Shop', 'Personal'] },
   kavya: { client: 'demo-kavya', name: 'Kavya Nair', accounts: ['Savings'] },
 };
-const SHOPS = ['Annapurna Stores', 'City Metro Card', 'Coastal Power Co.', 'Chai Point Corner', 'Bookworm Books'];
+const SHOPS = ['Annapurna Stores', 'City Metro Card', 'Coastal Power Co.', 'Chai Point Corner', 'Bookworm Books'] as const;
+
+/** What people write when they pay each shop (null: no note). demo:check holds the demo to it. */
+export const PAYEE_NOTES: Record<(typeof SHOPS)[number], readonly (string | null)[]> = {
+  'Annapurna Stores': ['groceries', 'rice and dal', 'vegetables', null],
+  'City Metro Card': ['metro recharge', 'monthly pass', null],
+  'Coastal Power Co.': ['electricity bill', 'power bill', null],
+  'Chai Point Corner': ['tea and snacks', 'chai with friends', null],
+  'Bookworm Books': ['textbooks', 'notebooks', null],
+};
 
 // mulberry32: a tiny deterministic PRNG, so the demo history is the same every time.
 function rng(seed: number): () => number {
@@ -151,13 +160,17 @@ export async function seedDemo(client: pg.ClientBase): Promise<string[] | null> 
   await move('topup', 'bank', 'chaos:B', 10_000_00n, at(30, 3), 'chaos test float');
 
   // Daily life: spends at shops, a few transfers between people, top-ups.
-  const notes = ['groceries', 'metro recharge', 'electricity bill', 'tea and snacks', 'textbooks', null, null];
   for (let day = 29; day >= 0; day--) {
     for (const who of ['meera', 'arjun', 'kavya'] as const) {
       if (rand() < 0.45) {
         const from = `${who}:${PEOPLE[who].accounts[0]!}`;
         const amount = who === 'kavya' ? rupees(40, 450) : rupees(120, 3_200);
-        if (balance.get(from)! > amount + 1_000_00n) await move('transfer', from, `shop:${pick(SHOPS)}`, amount, at(day, 8 + Math.floor(rand() * 13)), pick(notes));
+        if (balance.get(from)! > amount + 1_000_00n) {
+          // The same random draws in the same order as before (shop, time, note): every amount and balance is unchanged.
+          const shop = pick(SHOPS);
+          const when = at(day, 8 + Math.floor(rand() * 13));
+          await move('transfer', from, `shop:${shop}`, amount, when, pick(PAYEE_NOTES[shop]));
+        }
       }
     }
     if (day % 6 === 2) {

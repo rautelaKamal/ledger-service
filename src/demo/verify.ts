@@ -6,7 +6,7 @@
 import type { Pool } from '../db.js';
 import { TOPUP_MAX_PAISE, TRANSFER_MAX_PAISE } from '../limits.js';
 import { recordRun, runReconciliation } from '../reconcile/run.js';
-import { DEMO_CLIENTS, SEED_BALANCES } from './seed.js';
+import { DEMO_CLIENTS, PAYEE_NOTES, SEED_BALANCES } from './seed.js';
 
 export interface DemoCheck {
   ok: boolean;
@@ -50,6 +50,19 @@ export async function verifyDemo(pool: Pool): Promise<DemoCheck> {
       WHERE t.kind = 'opening' AND t.status = 'posted' AND a.name = 'Arjun Rao, Shop'`,
   );
   if (opening.rows[0]!.n !== 1) problems.push(`Arjun Rao, Shop: ${opening.rows[0]!.n} opening balances, the seed has 1`);
+
+  // Every payment to a shop carries a note that fits the shop (or none): no
+  // electricity bill paid at the tea stall.
+  const notes = await pool.query<{ shop: string; note: string }>(
+    `SELECT DISTINCT a.name AS shop, t.note
+       FROM transactions t JOIN entries e ON e.transaction_id = t.id AND e.direction = 'credit'
+       JOIN accounts a ON a.id = e.account_id
+      WHERE t.kind = 'transfer' AND a.owner_client_id = 'demo-merchants' AND t.note IS NOT NULL`,
+  );
+  for (const r of notes.rows) {
+    const fits = PAYEE_NOTES[r.shop as keyof typeof PAYEE_NOTES];
+    if (!fits?.includes(r.note)) problems.push(`${r.shop}: the note "${r.note}" does not fit this payee`);
+  }
 
   const report = await runReconciliation(pool);
   await recordRun(pool, report);
