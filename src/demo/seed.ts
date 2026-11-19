@@ -46,7 +46,16 @@ const PEOPLE: Record<Who, { client: string; name: string; accounts: string[] }> 
   arjun: { client: 'demo-arjun', name: 'Arjun Rao', accounts: ['Shop', 'Personal'] },
   kavya: { client: 'demo-kavya', name: 'Kavya Nair', accounts: ['Savings'] },
 };
-const SHOPS = ['Annapurna Stores', 'City Metro Card', 'Coastal Power Co.', 'Chai Point Corner', 'Bookworm Books'];
+const SHOPS = ['Annapurna Stores', 'City Metro Card', 'Coastal Power Co.', 'Chai Point Corner', 'Bookworm Books'] as const;
+
+/** What people write when they pay each shop (null: no note). demo:check holds the demo to it. */
+export const PAYEE_NOTES: Record<(typeof SHOPS)[number], readonly (string | null)[]> = {
+  'Annapurna Stores': ['groceries', 'rice and dal', 'vegetables', null],
+  'City Metro Card': ['metro recharge', 'monthly pass', null],
+  'Coastal Power Co.': ['electricity bill', 'power bill', null],
+  'Chai Point Corner': ['tea and snacks', 'chai with friends', null],
+  'Bookworm Books': ['textbooks', 'notebooks', null],
+};
 
 // mulberry32: a tiny deterministic PRNG, so the demo history is the same every time.
 function rng(seed: number): () => number {
@@ -100,7 +109,7 @@ export async function seedDemo(client: pg.ClientBase): Promise<string[] | null> 
     return new Date(when).toISOString();
   };
 
-  async function move(kind: 'transfer' | 'topup', from: string, to: string, paise: bigint, when: string, note: string | null): Promise<void> {
+  async function move(kind: 'transfer' | 'topup' | 'opening', from: string, to: string, paise: bigint, when: string, note: string | null): Promise<void> {
     const debitId = from === 'bank' ? bankId : ids.get(from)!;
     const creditId = ids.get(to)!;
     const tx = await client.query<{ id: string }>(`INSERT INTO transactions (kind, note, created_at) VALUES ($1, $2, $3) RETURNING id`, [kind, note, when]);
@@ -139,23 +148,29 @@ export async function seedDemo(client: pg.ClientBase): Promise<string[] | null> 
     await client.query(`UPDATE transactions SET status = 'failed' WHERE id = $1`, [txId]);
   }
 
-  // Opening money, 30 days ago.
+  // Opening money, 30 days ago. Arjun's shop account came with money it already held:
+  // an opening balance (migration 013), as a passbook shows it, not a top-up nobody
+  // requested; the per-request top-up limit (src/limits.ts) is for requests.
   await move('topup', 'bank', 'meera:Savings', 85_000_00n, at(30, 10), 'salary');
   await move('topup', 'bank', 'meera:Current', 20_000_00n, at(30, 11), null);
-  await move('topup', 'bank', 'arjun:Shop', 2_40_000_00n, at(30, 9), 'opening float');
+  await move('opening', 'bank', 'arjun:Shop', 2_40_000_00n, at(30, 9), 'balance brought forward');
   await move('topup', 'bank', 'arjun:Personal', 30_000_00n, at(30, 12), null);
   await move('topup', 'bank', 'kavya:Savings', 12_000_00n, at(30, 18), 'pocket money');
   await move('topup', 'bank', 'chaos:A', 10_000_00n, at(30, 3), 'chaos test float');
   await move('topup', 'bank', 'chaos:B', 10_000_00n, at(30, 3), 'chaos test float');
 
   // Daily life: spends at shops, a few transfers between people, top-ups.
-  const notes = ['groceries', 'metro recharge', 'electricity bill', 'tea and snacks', 'textbooks', null, null];
   for (let day = 29; day >= 0; day--) {
     for (const who of ['meera', 'arjun', 'kavya'] as const) {
       if (rand() < 0.45) {
         const from = `${who}:${PEOPLE[who].accounts[0]!}`;
         const amount = who === 'kavya' ? rupees(40, 450) : rupees(120, 3_200);
-        if (balance.get(from)! > amount + 1_000_00n) await move('transfer', from, `shop:${pick(SHOPS)}`, amount, at(day, 8 + Math.floor(rand() * 13)), pick(notes));
+        if (balance.get(from)! > amount + 1_000_00n) {
+          // The same random draws in the same order as before (shop, time, note): every amount and balance is unchanged.
+          const shop = pick(SHOPS);
+          const when = at(day, 8 + Math.floor(rand() * 13));
+          await move('transfer', from, `shop:${shop}`, amount, when, pick(PAYEE_NOTES[shop]));
+        }
       }
     }
     if (day % 6 === 2) {

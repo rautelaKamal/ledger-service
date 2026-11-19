@@ -13,11 +13,12 @@ type ViewTransitionDocument = Document & { startViewTransition?: (update: () => 
  * always switches instantly.
  */
 export function ThemeToggle() {
-  const { resolvedTheme, setTheme } = useTheme();
-  const dark = resolvedTheme === 'dark';
+  const { setTheme } = useTheme();
 
   function toggle(event: React.MouseEvent<HTMLButtonElement>): void {
-    const next = dark ? 'light' : 'dark';
+    // The theme on screen is the `dark` class on <html> (set before the first paint,
+    // also when it only follows the system): the action reads the same truth as the name.
+    const next = document.documentElement.classList.contains('dark') ? 'light' : 'dark';
     const doc = document as ViewTransitionDocument;
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (!doc.startViewTransition || reduce) {
@@ -44,9 +45,14 @@ export function ThemeToggle() {
   }
 
   return (
-    <Button variant="ghost" size="icon" aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'} onClick={toggle}>
+    <Button variant="ghost" size="icon" onClick={toggle}>
       <Sun className="size-4 dark:hidden" aria-hidden />
       <Moon className="hidden size-4 dark:block" aria-hidden />
+      {/* The name follows the theme actually shown, from the first paint: the same
+          `dark` class that picks the icon picks the words. (A name computed in React
+          was the server's guess, and hydration keeps a mismatched attribute.) */}
+      <span className="sr-only dark:hidden">Switch to dark theme</span>
+      <span className="sr-only hidden dark:inline">Switch to light theme</span>
     </Button>
   );
 }

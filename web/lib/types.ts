@@ -1,5 +1,11 @@
 // Shapes the web server passes to the browser. No client ids, no internal URLs.
 
+/** What ONE request may move, as the ledger API enforces it (GET /limits; src/limits.ts). */
+export interface Limits {
+  topupMaxPaise: string;
+  transferMaxPaise: string;
+}
+
 export interface Account {
   id: string;
   name: string;
@@ -12,7 +18,7 @@ export interface Account {
 
 export interface PassbookRow {
   id: string;
-  kind: 'transfer' | 'topup' | 'refund';
+  kind: 'transfer' | 'topup' | 'refund' | 'opening';
   status: 'pending' | 'posted' | 'failed';
   note: string | null;
   createdAt: string;

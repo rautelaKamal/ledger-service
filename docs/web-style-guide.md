@@ -46,11 +46,39 @@ through. All 5.1:1 or more on every paper.
 - **Rajdhani** 600: the balance and the account strips (squared digits, like a cheque's amount box). Real ₹ glyph.
 - Amounts: Indian grouping (₹1,24,560.50), never rounded, never "lakh", and **tabular
   figures, emulated**: neither face has a `tnum` feature (a "1" is 0.33 em, a "0" 0.54
-  em; `tabular-nums` changes nothing), so every digit sits in a slot as wide as the
-  face's widest digit (0.555 em Hind, 0.535 em Rajdhani; `web/components/money.tsx`).
-  Screen readers get the plain amount. A test checks the column lines up and both
-  faces draw their own ₹.
+  em; `tabular-nums` changes nothing), so every digit is padded by inline margins to a
+  slot as wide as the face's widest digit (0.555 em Hind, 0.535 em Rajdhani), using
+  each digit's measured width for the face and weight in use (`web/app/globals.css`).
+  Margins, never inline blocks or a hidden second copy: an amount is **one run of
+  text**, so copying it, finding it with Cmd+F and hearing it with a screen reader all
+  give it once. A struck amount (a failed top-up) gets one unbroken line across the
+  whole figure. Tests check every digit slot on screen, the column's alignment, what
+  copy, find and the accessibility tree return, and that both faces draw their own ₹.
 - Scale 14 / 16 / 18 / 24 / 36 / 60 px. Sentence case everywhere. No monospace.
+
+### Tabular figures: the trade-off
+
+Why spans with margins: an amount has to stay one run of text. Fixed-width inline
+blocks lined digits up exactly, but the browser's find in page cannot match across
+them (Cmd+F did not find "89,906"), and a screen reader may read each block on its
+own; a hidden second copy for screen readers put every amount in the page twice, in
+what is copied and what Cmd+F finds. Inline spans padded by margins keep copy, Cmd+F
+and screen readers right.
+
+The cost: the margins come from digit widths measured on macOS, where Chrome places
+glyphs at fractional positions, and there every slot matches to 0.3 px. Chrome on
+Linux rounds and hints each glyph to whole pixels, so a digit's slot there is off by
+up to **~1.56 px** (measured in CI), and a column of amounts can drift by a pixel or
+two per digit. Test 13 allows 2 px on Linux and 0.3 px elsewhere. A row's last digit
+still ends at the cell's right edge everywhere (the cells are right-aligned).
+
+A possible later improvement: tabular-figure copies of Hind and Rajdhani, built with
+`fonttools` at build time, in which only the digits are re-spaced to one advance
+width. Columns would then line up exactly on every platform with no spans at all.
+Both faces are under the SIL Open Font License, which allows modified versions; a
+modified font must not use a Reserved Font Name if the licence declares one, so the
+copies would be renamed (for example "Ledger Hind Figures") and served with
+`next/font/local` instead of `next/font/google`. Not done yet: it adds a build tool.
 
 ## The one bold element
 
@@ -64,7 +92,11 @@ name, a background image, not text) runs along the bottom edge.
 
 Where it appears: wherever a balance is the subject: the Overview header, the
 account strips on Send and Top up, and the person slips on the landing page (a
-counterfoil, a perforation, the leaf). Nowhere else.
+counterfoil, a perforation, the leaf). Nowhere else. On a slip the link is the line at
+the foot of the leaf, "Continue as Meera Iyer", the slip's main action: larger than the
+slip's own text, in ink, underlined in the person's tint (a link, never a boxed button).
+Its click area and focus ring cover the whole slip, and the rest of the slip is its
+description.
 
 ## Rules
 
@@ -73,6 +105,8 @@ counterfoil, a perforation, the leaf). Nowhere else.
 2. The passbook looks printed: entries in printer ink on a page with faint horizontal
    ruling and preprinted column rules (both in the person's tint); the running balance
    is the strongest text, on a slightly darker strip that runs unbroken down the page.
+   An account's history starts with its "Opening balance" (money it already held,
+   brought forward), never with a top-up nobody requested.
 3. Violet appears only when something is proven: Verified, Replayed, 0 problems.
 4. Pending is separate from posted, always (its own strip, hatched, never in the balance).
 5. Motion only answers the user: the theme toggle's circular reveal from the button
@@ -82,7 +116,13 @@ counterfoil, a perforation, the leaf). Nowhere else.
    `prefers-reduced-motion`: all of it instant.
 6. Floor: 4.5:1 for all text, visible focus (the person's tint, 3:1 or more), keyboard
    everywhere, both themes equally finished, no horizontal scroll at 360 px (tested on
-   every screen).
-7. Banned (they read as generated): cream + serif + terracotta; near-black with one acid
+   every screen). Every control is named by what it shows (WCAG 2.5.3), and a name that
+   depends on the theme follows the theme on screen from the first paint, not a guess
+   made on the server.
+7. Forms: Send and Top up are one form (two columns, the same fields, one line under
+   the amount for its hint or its problem). A field's problem is said once, under the
+   field; the submit button waits for a valid amount; the box below the button is for
+   what the server answered. One name per thing: "Top up", "Under the hood".
+8. Banned (they read as generated): cream + serif + terracotta; near-black with one acid
    accent; identical rounded cards with one grey shadow; decorative gradients; ALL-CAPS
    eyebrow labels; "A · B · C" meta strings; "→" on buttons; fade-up entrances.

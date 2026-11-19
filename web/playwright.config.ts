@@ -14,6 +14,10 @@ const envFile = '--env-file-if-exists=.env.e2e.local';
 
 // Refuse to start the stack against anything but ledger_e2e (the eval reads `ledger`).
 assertE2eDatabase();
+// Never reuse a server that is already listening on these ports: the browsable demo
+// (ledger_demo) uses the same ones, and tests sent to it would write into the demo.
+// A running demo makes the run fail at once ("port already used") instead.
+const reuseExistingServer = false;
 
 const devicesMatrix = [
   { name: 'desktop', use: { viewport: { width: 1366, height: 900 } } },
@@ -30,7 +34,8 @@ export default defineConfig({
   workers: 1, // one shared ledger: flows run in order
   retries: 0,
   forbidOnly: ci,
-  reporter: ci ? [['list'], ['html', { open: 'never' }]] : 'list',
+  // In CI also 'github': each failure becomes an annotation on the run, readable without the logs.
+  reporter: ci ? [['list'], ['github'], ['html', { open: 'never' }]] : 'list',
   timeout: 60_000,
   expect: { timeout: 15_000 },
   use: { baseURL: WEB, trace: 'retain-on-failure', locale: 'en-IN', timezoneId: 'Asia/Kolkata' },
@@ -53,7 +58,7 @@ export default defineConfig({
       cwd: '..',
       url: `${API}/readyz`,
       env: { PORT: '3100', METRICS_PORT: '9200', SYSTEM_COOLDOWN_SECONDS: '5', LOG_LEVEL: 'warn' },
-      reuseExistingServer: !ci,
+      reuseExistingServer,
       timeout: 60_000,
     },
     {
@@ -62,7 +67,7 @@ export default defineConfig({
       cwd: '..',
       url: 'http://127.0.0.1:9201/readyz',
       env: { WORKER_HTTP_PORT: '9201', PROVIDER_URL: PROVIDER, NOTIFICATION_SINK_URL: `${PROVIDER}/notifications`, WORKER_POLL_INTERVAL_MS: '200', LOG_LEVEL: 'warn' },
-      reuseExistingServer: !ci,
+      reuseExistingServer,
       timeout: 60_000,
     },
     {
@@ -71,7 +76,7 @@ export default defineConfig({
       cwd: '..',
       url: `${PROVIDER}/healthz`,
       env: { PROVIDER_PORT: '4200', LEDGER_WEBHOOK_URL: `${API}/webhooks/provider` },
-      reuseExistingServer: !ci,
+      reuseExistingServer,
       timeout: 60_000,
     },
     {
@@ -85,7 +90,7 @@ export default defineConfig({
         ASSISTANT_MODE: 'fixtures',
         SESSION_SECRET: 'e2e-session-secret-at-least-32-characters-long',
       },
-      reuseExistingServer: !ci,
+      reuseExistingServer,
       timeout: 60_000,
     },
   ],

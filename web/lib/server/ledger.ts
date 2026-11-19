@@ -1,5 +1,5 @@
 import 'server-only';
-import type { Account, BalanceDay, PassbookPage, SystemStatus, Topup, WireExchange } from '@/lib/types';
+import type { Account, BalanceDay, Limits, PassbookPage, SystemStatus, Topup, WireExchange } from '@/lib/types';
 import { env } from './env';
 
 // The ONLY code that talks to the ledger API. It runs on the web server and adds
@@ -52,6 +52,8 @@ const ledger = <T>(path: string, init?: RequestInit & { clientId?: string }) => 
 const internal = <T>(path: string, init?: RequestInit) => call<T>(env.LEDGER_INTERNAL_URL, 'ledger-internal', path, init);
 
 export const getAccounts = (clientId: string) => ledger<{ accounts: Account[] }>('/accounts', { clientId }).then((r) => r.accounts);
+/** The limits the API enforces, read from the API: the forms never state one it does not. */
+export const getLimits = () => ledger<Limits>('/limits');
 
 export function getPassbook(clientId: string, accountId: string, cursor?: string, limit = 25): Promise<PassbookPage> {
   const q = new URLSearchParams({ limit: String(limit), ...(cursor ? { cursor } : {}) });

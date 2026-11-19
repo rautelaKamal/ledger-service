@@ -6,6 +6,7 @@ import { logger } from '../logger.js';
 import { resultLabel, type ApiMetrics } from '../metrics.js';
 import { IdempotencyKeyBusyError, IdempotencyKeyReusedError, runIdempotent, type IdempotentOptions } from '../idempotency.js';
 import { findSettlementAccount } from '../ledger/topup.js';
+import { TOPUP_MAX_PAISE, overLimit } from '../limits.js';
 import { enqueueOutbox } from '../outbox/enqueue.js';
 import { errorBody } from './errors.js';
 import { readIdempotencyHeaders } from './idempotency-headers.js';
@@ -45,6 +46,12 @@ export function topupsRouter(pool: Pool, metrics: ApiMetrics, options: Idempoten
       return;
     }
     const body = parsed.data;
+    // Above the per-request limit (src/limits.ts): invalid, not stored under the key.
+    const tooMuch = overLimit('top-up', BigInt(body.amountPaise), TOPUP_MAX_PAISE);
+    if (tooMuch) {
+      res.status(400).json(errorBody('amount_over_limit', tooMuch, { maxPaise: TOPUP_MAX_PAISE.toString() }));
+      return;
+    }
 
     try {
       const result = await runIdempotent(

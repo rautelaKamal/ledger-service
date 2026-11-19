@@ -13,13 +13,16 @@ const useAfterHydration = () => useSyncExternalStore(noop, () => true, () => fal
 
 /**
  * A balance that counts to its new value when the person's OWN action changed it
- * (a send, a posted top-up); otherwise it simply shows the value. Screen readers
- * get the final amount only; reduced motion gets no animation at all. `slot`
- * names the figure across pages ("total:meera", "account:<id>").
+ * (a send, a posted top-up); otherwise it simply shows the value. Like <Money>, the
+ * amount is in the page ONCE. While it counts (0.7 s) it is hidden from assistive
+ * technology, so a screen reader (or a live region around it) gets the final amount,
+ * once, never the figures in between. Reduced motion gets no animation at all.
+ * `slot` names the figure across pages ("total:meera", "account:<id>").
  */
-export function AnimatedMoney({ paise, slot, label }: { paise: string; slot: string; label?: string }) {
+export function AnimatedMoney({ paise, slot }: { paise: string; slot: string }) {
   const target = BigInt(paise);
   const [shown, setShown] = useState(target);
+  const [counting, setCounting] = useState(false);
   const current = useRef(target);
   const first = useRef(true);
   // Mounted while hydrating a full page load: the server already painted the final
@@ -39,8 +42,10 @@ export function AnimatedMoney({ paise, slot, label }: { paise: string; slot: str
     if (skip || from === target || reduce || !moneyMovedRecently()) {
       current.current = target;
       setShown(target);
+      setCounting(false);
       return;
     }
+    setCounting(true);
     const diff = Number(target - from);
     const start = performance.now();
     let frame = 0;
@@ -51,18 +56,15 @@ export function AnimatedMoney({ paise, slot, label }: { paise: string; slot: str
       current.current = value;
       setShown(value);
       if (t < 1) frame = requestAnimationFrame(tick);
+      else setCounting(false);
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
   }, [target, slot]);
 
   return (
-    <span data-paise={target.toString()} data-slot={slot}>
-      <span aria-hidden className="money whitespace-nowrap">
-        {/* Already hidden from assistive technology: the final amount is read below. */}
-        <Figures text={formatPaise(shown)} spoken={false} />
-      </span>
-      <span className="sr-only">{label ? `${label} ` : ''}{formatPaise(target)}</span>
+    <span data-paise={target.toString()} data-slot={slot} className="money whitespace-nowrap" aria-hidden={counting || undefined}>
+      <Figures text={formatPaise(shown)} />
     </span>
   );
 }

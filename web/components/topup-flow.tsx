@@ -2,14 +2,15 @@
 
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { AmountField, fieldSelectClass, readAmount } from '@/components/amount-field';
 import { AnimatedMoney } from '@/components/animated-money';
 import { Money } from '@/components/money';
 import { SecurityArt } from '@/components/security-print';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { secondsLabel } from '@/lib/dates';
-import { formatPaise, parseRupees } from '@/lib/money';
+import { newKey } from '@/lib/keys';
+import { formatPaise } from '@/lib/money';
 import { markMoneyMoved } from '@/lib/money-moved';
 import type { Account, Topup } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -45,7 +46,7 @@ function Step({ n, title, state, children }: { n: number; title: string; state: 
   );
 }
 
-export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: Account[]; initialTopupId?: string; initialKey: string }) {
+export function TopupFlow({ accounts, maxPaise, initialTopupId, initialKey }: { accounts: Account[]; maxPaise: string; initialTopupId?: string; initialKey: string }) {
   const router = useRouter();
   const ids = useId();
   const [account, setAccount] = useState(accounts[0]?.id ?? '');
@@ -60,7 +61,10 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
   const [key, setKey] = useState(initialKey);
   const started = useRef(0);
   const done = useRef(false);
-  const paise = parseRupees(amount);
+  // The ledger API's own limit (GET /limits): the field says it, and the button waits
+  // for a valid amount within it; the API refuses anything above it regardless.
+  const max = BigInt(maxPaise);
+  const { paise, ok: amountOk } = readAmount(amount, max, 'top-up');
 
   const poll = useCallback(async () => {
     if (!topupId) return;
@@ -99,7 +103,7 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
 
   async function request(e: React.FormEvent): Promise<void> {
     e.preventDefault();
-    if (!paise) return setError('Enter an amount in rupees, for example 5,000.00.');
+    if (!amountOk || !paise) return; // the field says why; the button is disabled meanwhile
     setBusy(true);
     setError(null);
     try {
@@ -146,33 +150,34 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
   ) : null;
 
   if (!topupId) {
+    // The same form as Send: two columns, the same fields and the same line under the
+    // amount; the box below the button is for the server's answers only.
     return (
-      <div className="flex flex-col gap-6">
-      {strip}
-      <form onSubmit={request} className="flex max-w-xl flex-wrap items-end gap-4">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor={`${ids}-amount`}>Amount in rupees</Label>
-          <Input id={`${ids}-amount`} inputMode="decimal" placeholder="5,000.00" value={amount} onChange={(e) => setAmount(e.target.value)} className="money h-10 w-40" />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor={`${ids}-account`}>To</Label>
-          <select id={`${ids}-account`} value={account} onChange={(e) => setAccount(e.target.value)} className="h-10 rounded-md border border-input bg-surface px-3">
-            {accounts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name.split(', ').at(-1)}
-              </option>
-            ))}
-          </select>
-        </div>
-        <Button type="submit" size="lg" className="h-10" disabled={busy}>
-          {busy ? 'Requesting…' : paise ? `Request a ${formatPaise(paise)} top-up` : 'Request top-up'}
-        </Button>
+      <div className="flex max-w-2xl flex-col gap-8">
+        {strip}
+        <form onSubmit={request} className="grid gap-5 sm:grid-cols-2">
+          <AmountField id={`${ids}-amount`} value={amount} onChange={setAmount} max={max} what="top-up" placeholder="5,000.00" />
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={`${ids}-account`}>To</Label>
+            <select id={`${ids}-account`} value={account} onChange={(e) => setAccount(e.target.value)} className={fieldSelectClass}>
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name.split(', ').at(-1)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="sm:col-span-2">
+            <Button type="submit" size="lg" disabled={busy || !amountOk}>
+              {busy ? 'Requesting…' : paise ? `Request a ${formatPaise(paise)} top-up` : 'Request top-up'}
+            </Button>
+          </div>
+        </form>
         {error ? (
-          <p role="alert" className="w-full border-l-2 border-failed pl-3 text-failed">
+          <p role="alert" className="border-l-2 border-failed pl-3 text-failed">
             {error}
           </p>
         ) : null}
-      </form>
       </div>
     );
   }
@@ -263,11 +268,11 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
               setStalled(false);
               setError(null);
               setAmount('');
-              setKey(`web-topup-${crypto.randomUUID()}`);
+              setKey(newKey('topup'));
               router.replace('/topup');
             }}
           >
-            Add money again
+            Top up again
           </Button>
         </div>
       ) : null}

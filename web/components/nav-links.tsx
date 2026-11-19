@@ -32,7 +32,7 @@ export function NavLinks({ variant }: { variant: 'rail' | 'tabs' }) {
               )}
             >
               <Icon className="size-4 shrink-0" aria-hidden />
-              <span>{variant === 'tabs' && label === 'Under the hood' ? 'System' : label}</span>
+              <span>{label}</span>
             </Link>
           </li>
         );

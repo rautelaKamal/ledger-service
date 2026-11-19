@@ -3,6 +3,7 @@
 import { Copy, RefreshCw } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useId, useState } from 'react';
+import { AmountField, fieldSelectClass, readAmount } from '@/components/amount-field';
 import { AnimatedMoney } from '@/components/animated-money';
 import { Money } from '@/components/money';
 import { SecurityArt } from '@/components/security-print';
@@ -11,7 +12,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { WirePanel } from '@/components/wire-panel';
-import { formatPaise, parseRupees } from '@/lib/money';
+import { newKey } from '@/lib/keys';
+import { formatPaise } from '@/lib/money';
 import { markMoneyMoved } from '@/lib/money-moved';
 import type { Account, WireExchange } from '@/lib/types';
 import type { Payee } from '@/lib/server/directory';
@@ -32,9 +34,8 @@ const REASONS: Record<string, string> = {
   same_account: 'an account cannot send money to itself',
   idempotency_key_reused: 'this key was already used for a different request',
 };
-const selectClass = 'h-10 w-full rounded-md border border-input bg-surface px-3';
 
-export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]; payees: Payee[]; initialKey: string }) {
+export function SendForm({ accounts, payees, maxPaise, initialKey }: { accounts: Account[]; payees: Payee[]; maxPaise: string; initialKey: string }) {
   const router = useRouter();
   const ids = useId();
   const [key, setKey] = useState(initialKey);
@@ -47,7 +48,10 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const paise = parseRupees(amount);
+  // The ledger API's own limit (GET /limits): the field says it, and the Send button
+  // waits for a valid amount within it; the API refuses anything above it regardless.
+  const max = BigInt(maxPaise);
+  const { paise, ok: amountOk } = readAmount(amount, max, 'transfer');
 
   // Balances in the From/To lists come from the server: fetch them again whenever
   // this tab comes back into view (money may have moved elsewhere meanwhile).
@@ -91,8 +95,8 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
 
   async function onSubmit(e: React.FormEvent): Promise<void> {
     e.preventDefault();
-    if (!paise) return setError('Enter an amount in rupees, for example 1,200.00.');
-    if (from === to) return setError('Choose a different account to send to.');
+    // The field says what is wrong with the amount; the button is disabled meanwhile.
+    if (!amountOk || !paise || from === to) return;
     const r = await send();
     if (r) {
       setFirst(r);
@@ -107,7 +111,7 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
     setError(null);
     setAmount('');
     setNote('');
-    setKey(crypto.randomUUID());
+    setKey(newKey('transfer'));
   }
 
   const status = (r: Result) => r.exchange.response.status;
@@ -131,7 +135,7 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
       <form onSubmit={onSubmit} className="grid gap-5 sm:grid-cols-2" aria-describedby={`${ids}-key`}>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${ids}-from`}>From</Label>
-          <select id={`${ids}-from`} className={selectClass} value={from} onChange={(e) => setFrom(e.target.value)} disabled={locked}>
+          <select id={`${ids}-from`} className={fieldSelectClass} value={from} onChange={(e) => setFrom(e.target.value)} disabled={locked}>
             {accounts.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name.split(', ').at(-1)}, {formatPaise(a.balancePaise)}
@@ -141,7 +145,7 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${ids}-to`}>To</Label>
-          <select id={`${ids}-to`} className={selectClass} value={to} onChange={(e) => setTo(e.target.value)} disabled={locked}>
+          <select id={`${ids}-to`} className={fieldSelectClass} value={to} onChange={(e) => setTo(e.target.value)} disabled={locked}>
             {(['Your accounts', 'People', 'Shops'] as const).map((g) => (
               <optgroup key={g} label={g}>
                 {payees
@@ -155,24 +159,7 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
             ))}
           </select>
         </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor={`${ids}-amount`}>Amount in rupees</Label>
-          <Input
-            id={`${ids}-amount`}
-            inputMode="decimal"
-            autoComplete="off"
-            placeholder="1,200.00"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            disabled={locked}
-            className="money h-10"
-            aria-invalid={amount !== '' && !paise}
-          />
-          {/* The line is always there (empty or not), so typing never moves the Send button. */}
-          <span className="min-h-5 text-sm text-ink-soft" aria-live="polite">
-            {amount === '' ? '\u00a0' : paise ? formatPaise(paise) : 'Rupees, for example 1,200.00'}
-          </span>
-        </div>
+        <AmountField id={`${ids}-amount`} value={amount} onChange={setAmount} max={max} what="transfer" placeholder="1,200.00" disabled={locked} />
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${ids}-note`}>Note, optional</Label>
           <Input id={`${ids}-note`} className="h-10" maxLength={140} placeholder="rent share" value={note} onChange={(e) => setNote(e.target.value)} disabled={locked} />
@@ -185,7 +172,7 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
             <Copy className="size-4" aria-hidden /> Copy
           </Button>
           {!locked ? (
-            <Button type="button" variant="ghost" size="sm" onClick={() => setKey(crypto.randomUUID())}>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setKey(newKey('transfer'))}>
               <RefreshCw className="size-4" aria-hidden /> New key
             </Button>
           ) : null}
@@ -194,7 +181,7 @@ export function SendForm({ accounts, payees, initialKey }: { accounts: Account[]
 
         {!locked ? (
           <div className="sm:col-span-2">
-            <Button type="submit" size="lg" disabled={busy}>
+            <Button type="submit" size="lg" disabled={busy || !amountOk}>
               {busy ? 'Sending…' : paise ? `Send ${formatPaise(paise)}` : 'Send'}
             </Button>
           </div>
