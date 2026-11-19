@@ -340,14 +340,41 @@ test('13. amounts line up digit under digit, and both faces draw their own ₹',
   const table = page.getByRole('table', { name: /Passbook/ });
   await expect(table.locator('td.col-balance .fig').first()).toBeVisible();
 
-  // Every digit slot in the balance column is the same width ("1" as wide as "8")...
-  const widths = await table.locator('td.col-balance .fig').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().width * 10) / 10));
-  expect(new Set(widths).size).toBe(1);
-  // ...and the last digit of every row ends at the same x: the column is aligned.
-  const rightEdges = await table.locator('td.col-balance .figs').evaluateAll((els) =>
-    els.map((e) => Math.round([...e.querySelectorAll('.fig')].at(-1)!.getBoundingClientRect().right)),
+  // A digit's slot is the glyph plus the margins that pad it (components/money.tsx).
+  // Every slot in the balance column is the same width ("1" as wide as "8")...
+  const widths = await table.locator('td.col-balance .fig').evaluateAll((els) =>
+    els.map((e) => {
+      const s = getComputedStyle(e);
+      return e.getBoundingClientRect().width + parseFloat(s.marginLeft) + parseFloat(s.marginRight);
+    }),
   );
-  expect(new Set(rightEdges).size).toBe(1);
+  expect(Math.max(...widths) - Math.min(...widths)).toBeLessThan(0.3);
+  // ...and the last slot of every row ends at the same x: the column is aligned.
+  const rightEdges = await table.locator('td.col-balance .figs').evaluateAll((els) =>
+    els.map((e) => {
+      const last = [...e.querySelectorAll('.fig')].at(-1)!;
+      return last.getBoundingClientRect().right + parseFloat(getComputedStyle(last).marginRight);
+    }),
+  );
+  expect(Math.max(...rightEdges) - Math.min(...rightEdges)).toBeLessThan(0.5);
+
+  // On every screen, every digit sits in a slot of its face's width: catches a face or
+  // weight whose digit widths globals.css does not know.
+  for (const path of ['/', '/overview', '/send', '/topup']) {
+    await page.goto(path);
+    await page.waitForLoadState('networkidle');
+    // Only digits that are drawn: streamed parts of a page wait, hidden, to be revealed.
+    const off = await page.locator('.fig').evaluateAll((els) =>
+      els.filter((e) => e.getClientRects().length > 0).map((e) => {
+        const s = getComputedStyle(e);
+        const slot = e.getBoundingClientRect().width + parseFloat(s.marginLeft) + parseFloat(s.marginRight);
+        return Math.abs(slot - parseFloat(s.getPropertyValue('--fig-w')) * parseFloat(s.fontSize));
+      }),
+    );
+    expect(off.length, path).toBeGreaterThan(0);
+    expect(Math.max(...off), path).toBeLessThan(0.3);
+  }
+  await page.goto('/overview');
 
   // The ₹ comes from the page's own faces (Hind for amounts, Rajdhani for the balance), not a fallback.
   const ownRupee = await page.evaluate(() => {
@@ -435,4 +462,53 @@ test('16. the theme button names the theme it switches to, also on a first visit
   await page.getByRole('button', { name: 'Switch to dark theme', exact: true }).click();
   await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(true);
   await expect(page.getByRole('button', { name: 'Switch to light theme', exact: true })).toBeVisible();
+});
+
+test('17. an amount is in the page once: copying it, finding it and hearing it all give it once', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await become(page, 'Meera Iyer');
+  const total = page.locator('[data-balance="total"]');
+  await expect(total).toBeVisible(); // streamed content is revealed a moment after the load
+  const shown = (await total.innerText()).trim();
+  expect(shown).toMatch(/^₹[\d,]+\.\d{2}$/);
+  expect(paiseOf(shown)).toBe(BigInt((await total.locator('[data-paise]').getAttribute('data-paise'))!));
+
+  // Screen readers: the one amount, not the amount twice.
+  expect(await total.ariaSnapshot()).toBe(`- text: ${shown}`);
+
+  // Copy, as a person does it: select the balance, Cmd/Ctrl+C.
+  await total.evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    getSelection()!.removeAllRanges();
+    getSelection()!.addRange(range);
+  });
+  await page.keyboard.press('ControlOrMeta+KeyC');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(shown);
+
+  // Find in page: found once in the balance, and only where it can be seen
+  // (a hidden copy would match too, as a 1 px wide box).
+  const hits = await page.evaluate((needle) => {
+    // window.find: the browser's own find-in-page search, scriptable (not in the TS DOM types).
+    const find = (window as unknown as { find(text: string, caseSensitive: boolean, backwards: boolean, wrap: boolean): boolean }).find.bind(window);
+    const box = document.querySelector('[data-balance="total"]')!;
+    getSelection()!.removeAllRanges();
+    const found: { inBalance: boolean; width: number }[] = [];
+    while (found.length < 10 && find(needle, true, false, false)) {
+      const range = getSelection()!.getRangeAt(0);
+      found.push({ inBalance: box.contains(range.commonAncestorContainer), width: range.getBoundingClientRect().width });
+    }
+    return found;
+  }, shown);
+  expect(hits.filter((h) => h.inBalance)).toHaveLength(1);
+  for (const h of hits) expect(h.width).toBeGreaterThan(20);
+
+  // Every amount on every screen is its amount once in the page's text. (Under the
+  // hood shows amounts only after a chaos run; test 6 covers that page.)
+  for (const path of ['/', '/overview', '/send', '/topup']) {
+    await page.goto(path);
+    const amounts = await page.locator('[data-paise]').allInnerTexts();
+    expect(amounts.length, path).toBeGreaterThan(0);
+    for (const a of amounts) expect(a.trim(), path).toMatch(/^[+−]?₹[\d,]+\.\d{2}$/);
+  }
 });

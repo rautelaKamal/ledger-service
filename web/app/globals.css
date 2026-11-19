@@ -174,14 +174,43 @@ code {
   overflow-wrap: anywhere;
 }
 
-/* Every amount: tabular figures, emulated (components/money.tsx): neither face has
-   a tnum feature, so each digit gets a slot as wide as the face's widest digit. */
-.money { --fig-w: 0.555em; } /* Hind's widest digit, any weight in use */
-.font-figures { --fig-w: 0.535em; } /* Rajdhani 600 */
-.figs .fig { display: inline-block; width: var(--fig-w); text-align: center; }
-/* A strike-through does not reach into inline blocks by itself: hand it down. */
-.figs,
-.figs .fig { text-decoration: inherit; }
+/* Every amount: tabular figures, emulated (components/money.tsx). Neither face has
+   a tnum feature, so each digit is padded by inline margins to a slot as wide as
+   the face's widest digit (--fig-w), centred. Margins, not inline blocks: the amount
+   stays one run of text for copying, find in page and screen readers.
+   --d0 … --d9: each digit's advance width for the face and weight in use, measured
+   from the fonts in the browser (canvas measureText at 1000 px). Test 13 checks
+   that every digit slot on screen is --fig-w wide. */
+.money { /* Hind 400 */
+  --fig-w: 0.555em;
+  --d0: 0.544em; --d1: 0.323em; --d2: 0.494em; --d3: 0.466em; --d4: 0.54em;
+  --d5: 0.509em; --d6: 0.526em; --d7: 0.451em; --d8: 0.536em; --d9: 0.504em;
+}
+.font-medium .money, .money.font-medium { /* Hind 500 */
+  --d0: 0.545em; --d1: 0.34em; --d2: 0.496em; --d3: 0.471em; --d4: 0.546em;
+  --d5: 0.507em; --d6: 0.529em; --d7: 0.459em; --d8: 0.538em; --d9: 0.512em;
+}
+.font-semibold .money, .money.font-semibold, .col-balance .money { /* Hind 600 */
+  --d0: 0.546em; --d1: 0.358em; --d2: 0.498em; --d3: 0.476em; --d4: 0.554em;
+  --d5: 0.504em; --d6: 0.533em; --d7: 0.469em; --d8: 0.541em; --d9: 0.522em;
+}
+.font-figures .money, .money.font-figures { /* Rajdhani: one face (600), whatever the weight asked */
+  --fig-w: 0.535em;
+  --d0: 0.528em; --d1: 0.327em; --d2: 0.487em; --d3: 0.504em; --d4: 0.533em;
+  --d5: 0.497em; --d6: 0.515em; --d7: 0.412em; --d8: 0.533em; --d9: 0.515em;
+}
+.fig-0 { --d: var(--d0); } .fig-1 { --d: var(--d1); } .fig-2 { --d: var(--d2); } .fig-3 { --d: var(--d3); } .fig-4 { --d: var(--d4); }
+.fig-5 { --d: var(--d5); } .fig-6 { --d: var(--d6); } .fig-7 { --d: var(--d7); } .fig-8 { --d: var(--d8); } .fig-9 { --d: var(--d9); }
+.figs .fig { margin-inline: calc((var(--fig-w) - var(--d)) / 2); }
+/* A struck-through amount (a failed top-up): one unbroken line across the whole
+   figure. A text decoration would break at every digit's margin. */
+.money.line-through {
+  text-decoration-line: none;
+  background-image: linear-gradient(currentColor, currentColor);
+  background-repeat: no-repeat;
+  background-size: 100% max(1px, 0.07em);
+  background-position: 0 56%;
+}
 
 /* Pending: hatched, so it reads as "not yet" without relying on colour. */
 .hatch {
