@@ -1,10 +1,12 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { AnimatedMoney } from '@/components/animated-money';
 import { BalanceChart } from '@/components/balance-chart';
 import { Money } from '@/components/money';
 import { Notice } from '@/components/notice';
 import { Passbook } from '@/components/passbook';
+import { SecurityArt } from '@/components/security-print';
 import { ago } from '@/lib/dates';
 import { sumPaise } from '@/lib/money';
 import { clientIdOf, currentPersona } from '@/lib/server/identity';
@@ -48,12 +50,15 @@ export default async function Overview({ searchParams }: { searchParams: Promise
 
   return (
     <div className="flex max-w-4xl flex-col gap-10">
-      <section aria-labelledby="balance-heading">
+      <section aria-labelledby="balance-heading" className="security security-hero -mx-4 px-4 pt-5 pb-6 sm:mx-0 sm:px-6">
+        <SecurityArt persona={persona} />
         <h1 id="balance-heading" className="text-lg text-ink-soft">
           {persona.firstName}&rsquo;s money
         </h1>
         <p className="mt-1 font-figures text-4xl leading-none font-semibold sm:text-6xl">
-          <Money paise={total} />
+          <span className="amount-box inline-block" data-balance="total">
+            <AnimatedMoney paise={total.toString()} slot={`total:${persona.key}`} />
+          </span>
         </p>
         <p className="mt-2 text-ink-soft">
           {accounts.length === 1 ? `in ${shortName(accounts[0]!.name)}` : `across ${accounts.map((a) => shortName(a.name)).join(' and ')}`}

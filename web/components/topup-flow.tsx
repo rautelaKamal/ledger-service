@@ -2,12 +2,15 @@
 
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { AnimatedMoney } from '@/components/animated-money';
 import { Money } from '@/components/money';
+import { SecurityArt } from '@/components/security-print';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { timeLabel } from '@/lib/dates';
+import { secondsLabel } from '@/lib/dates';
 import { formatPaise, parseRupees } from '@/lib/money';
+import { markMoneyMoved } from '@/lib/money-moved';
 import type { Account, Topup } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
@@ -68,6 +71,7 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
     setTopup(t);
     if (t.status !== 'pending' && !done.current) {
       done.current = true; // stop polling: a final top-up never changes again
+      if (t.status === 'posted') markMoneyMoved(); // the balance strip counts up to its new value
       router.refresh();
     }
   }, [topupId, router]);
@@ -128,16 +132,31 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
     setBankSent(outcome);
   }
 
+  const stripAccount = accounts.find((a) => a.id === (topup?.accountId ?? account));
+  const strip = stripAccount ? (
+    <div className="security max-w-2xl px-4 pt-3 pb-4 sm:px-6">
+      <SecurityArt />
+      <p className="text-ink-soft">Adding to {stripAccount.name.split(', ').at(-1)}</p>
+      <p className="font-figures text-4xl leading-none font-semibold">
+        <span className="amount-box inline-block">
+          <AnimatedMoney paise={stripAccount.balancePaise} slot={`account:${stripAccount.id}`} />
+        </span>
+      </p>
+    </div>
+  ) : null;
+
   if (!topupId) {
     return (
+      <div className="flex flex-col gap-6">
+      {strip}
       <form onSubmit={request} className="flex max-w-xl flex-wrap items-end gap-4">
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${ids}-amount`}>Amount in rupees</Label>
-          <Input id={`${ids}-amount`} inputMode="decimal" placeholder="5,000.00" value={amount} onChange={(e) => setAmount(e.target.value)} className="money w-40" />
+          <Input id={`${ids}-amount`} inputMode="decimal" placeholder="5,000.00" value={amount} onChange={(e) => setAmount(e.target.value)} className="money h-10 w-40" />
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${ids}-account`}>To</Label>
-          <select id={`${ids}-account`} value={account} onChange={(e) => setAccount(e.target.value)} className="rounded-md border border-input bg-surface px-3 py-2">
+          <select id={`${ids}-account`} value={account} onChange={(e) => setAccount(e.target.value)} className="h-10 rounded-md border border-input bg-surface px-3">
             {accounts.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name.split(', ').at(-1)}
@@ -145,7 +164,7 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
             ))}
           </select>
         </div>
-        <Button type="submit" size="lg" disabled={busy}>
+        <Button type="submit" size="lg" className="h-10" disabled={busy}>
           {busy ? 'Requesting…' : paise ? `Request a ${formatPaise(paise)} top-up` : 'Request top-up'}
         </Button>
         {error ? (
@@ -154,6 +173,7 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
           </p>
         ) : null}
       </form>
+      </div>
     );
   }
 
@@ -161,6 +181,7 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
   const paid = Boolean(topup?.providerPaymentId);
   return (
     <div className="flex max-w-2xl flex-col gap-6" aria-live="polite">
+      {strip}
       <p>
         {topup ? (
           <>
@@ -172,13 +193,13 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
       </p>
       <ol>
         <Step n={1} title="Requested" state={topup ? 'done' : 'current'}>
-          {topup ? `${timeLabel(topup.createdAt)} IST: 202 Accepted. Nothing is credited yet; the API only recorded the request and queued a payment command.` : null}
+          {topup ? `${secondsLabel(topup.createdAt)} IST: 202 Accepted. Nothing is credited yet; the API only recorded the request and queued a payment command.` : null}
         </Step>
         <Step n={2} title="Payment created" state={paid ? 'done' : 'current'}>
           {paid ? (
             <>
-              The worker asked the payment provider through the outbox&rsquo;s command lane: payment <code className="money">{topup?.providerPaymentId}</code>. The time it
-              happened is not recorded.
+              {topup?.paymentSentAt ? `${secondsLabel(topup.paymentSentAt)} IST: ` : ''}the worker delivered the payment command through the outbox&rsquo;s command lane;
+              the provider opened payment <code className="money">{topup?.providerPaymentId}</code>.
             </>
           ) : (
             'Waiting for the worker to pick up the payment command.'
@@ -205,7 +226,7 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
         <Step n={4} title="Webhook received" state={webhook ? 'done' : 'waiting'}>
           {webhook ? (
             <>
-              {timeLabel(webhook.receivedAt)} IST: event <code className="money">{webhook.eventId}</code>, signature checked, recorded once.
+              {secondsLabel(webhook.receivedAt)} IST: event <code className="money">{webhook.eventId}</code>, signature checked, recorded once.
               {topup && topup.webhooks.length > 1 ? ` ${topup.webhooks.length - 1} more deliveries of events were recorded and ignored as duplicates or late.` : ''}
             </>
           ) : null}
@@ -213,7 +234,7 @@ export function TopupFlow({ accounts, initialTopupId, initialKey }: { accounts: 
         <Step n={5} title={topup?.status === 'failed' ? 'Failed' : 'Posted'} state={topup?.status === 'posted' ? 'done' : topup?.status === 'failed' ? 'failed' : 'waiting'}>
           {topup?.status === 'posted' && topup.postedAt ? (
             <>
-              {timeLabel(topup.postedAt)} IST: <Money paise={topup.amountPaise} signed /> entered in the passbook, balanced against the bank settlement account.
+              {secondsLabel(topup.postedAt)} IST: <Money paise={topup.amountPaise} signed /> entered in the passbook, balanced against the bank settlement account.
             </>
           ) : topup?.status === 'failed' ? (
             'Nothing was credited and no entry was written. The passbook shows it struck through.'

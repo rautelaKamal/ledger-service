@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { resetDemo } from './demo-db';
 import { become, expectAccessible } from './helpers';
 
 // Every screen, desktop and phone, light and dark: docs/images/web/<screen>-<device>-<theme>.png
@@ -20,6 +21,10 @@ async function shot(page: Page, name: string): Promise<void> {
 }
 
 test.describe.configure({ mode: 'serial' });
+
+// Every device/theme starts from the seed, so all 24 screenshots show the same
+// balances (the Send and Top up screens move money while they are captured).
+test.beforeAll(() => resetDemo());
 
 test('1 pick', async ({ page }) => {
   await page.goto('/');

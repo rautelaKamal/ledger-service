@@ -109,10 +109,10 @@ jobs:
           --health-retries 30
     env:
       CI: "true"
-      DATABASE_URL: postgres://ledger_app:ledger_app_local@localhost:5432/ledger
-      OWNER_DATABASE_URL: postgres://ledger_owner:ledger_owner_local@localhost:5432/ledger
-      WORKER_DATABASE_URL: postgres://ledger_worker:ledger_worker_local@localhost:5432/ledger
-      RECONCILER_DATABASE_URL: postgres://ledger_reconciler:ledger_reconciler_local@localhost:5432/ledger
+      DATABASE_URL: postgres://ledger_app:ledger_app_local@localhost:5432/ledger_e2e
+      OWNER_DATABASE_URL: postgres://ledger_owner:ledger_owner_local@localhost:5432/ledger_e2e
+      WORKER_DATABASE_URL: postgres://ledger_worker:ledger_worker_local@localhost:5432/ledger_e2e
+      RECONCILER_DATABASE_URL: postgres://ledger_reconciler:ledger_reconciler_local@localhost:5432/ledger_e2e
       WEBHOOK_SECRET: ci-webhook-secret-not-for-production
     steps:
       - uses: actions/checkout@v4
@@ -131,6 +131,17 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d postgres -f k8s/base/postgres/init/00-roles.sql
+      - name: Create ledger_e2e, the only database the browser tests may write to
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d postgres <<'SQL'
+          CREATE DATABASE ledger_e2e OWNER ledger_owner;
+          REVOKE CONNECT ON DATABASE ledger_e2e FROM PUBLIC;
+          GRANT CONNECT ON DATABASE ledger_e2e TO ledger_owner, ledger_app, ledger_worker, ledger_reconciler, ledger_agent;
+          \connect ledger_e2e
+          CREATE EXTENSION IF NOT EXISTS vector;
+          SQL
       - name: Migrate and seed the demo people
         run: npm run migrate && npm run seed:demo
 

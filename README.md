@@ -229,6 +229,8 @@ followed by reconciliation. The browser only talks to the Next.js server, which 
 
 ```bash
 npm run seed:demo                     # the demo people (as ledger_owner, idempotent)
+npm run demo:reset                    # start the demo over: demo clients only, in one transaction
+npm run demo:check                    # every demo balance as seeded, and the ledger reconciles
 cd web && npm ci && npx next build
 npx playwright test --project=flows   # starts the API, worker, mock provider and web itself
 npm run screenshots                   # docs/images/web/, desktop + phone, light + dark

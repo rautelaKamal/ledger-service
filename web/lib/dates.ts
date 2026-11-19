@@ -4,12 +4,15 @@ const TZ = 'Asia/Kolkata';
 const DAY = new Intl.DateTimeFormat('en-IN', { timeZone: TZ, weekday: 'short', day: 'numeric', month: 'short' });
 const DAY_KEY = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
 const TIME = new Intl.DateTimeFormat('en-IN', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false });
+const SECONDS = new Intl.DateTimeFormat('en-IN', { timeZone: TZ, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 const STAMP = new Intl.DateTimeFormat('en-IN', { timeZone: TZ, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 const SHORT = new Intl.DateTimeFormat('en-IN', { timeZone: TZ, day: 'numeric', month: 'short' });
 
 export const dayLabel = (iso: string): string => DAY.format(new Date(iso));
 export const dayKey = (iso: string): string => DAY_KEY.format(new Date(iso));
 export const timeLabel = (iso: string): string => TIME.format(new Date(iso));
+/** To the second: a top-up's steps are seconds apart. */
+export const secondsLabel = (iso: string): string => SECONDS.format(new Date(iso));
 export const stampLabel = (iso: string): string => `${STAMP.format(new Date(iso))} IST`;
 export const shortDay = (yyyyMmDd: string): string => SHORT.format(new Date(`${yyyyMmDd}T12:00:00+05:30`));
 

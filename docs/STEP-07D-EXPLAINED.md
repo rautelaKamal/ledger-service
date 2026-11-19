@@ -37,10 +37,26 @@ thing on the screen. A top-up waiting for the bank is not in it: it sits in its 
 the passbook it says "not in balance" where the balance would be. A failed top-up stays in
 the passbook, struck through, so nobody wonders where it went.
 
-**One loud element: the rubber stamp.** The violet of a bank's ink stamp appears only
+**One bold element: a cheque's security print.** Wherever a balance is the subject (the
+Overview header, the account strips on Send and Top up, the person slips on the landing
+page), it sits on a flat guilloche: three families of interlaced sine curves, constant
+line weight, one small tile repeated, tinted after a banknote (Meera ₹50 blue, Arjun ₹10
+brown, Kavya ₹20 green). The amount sits in a cleared amount box, as on a cheque, with a
+line of microprint along the edge. In dark mode the print glows faintly, like security
+ink under a UV lamp. The full rules are in [the style guide](web-style-guide.md).
+
+**One loud ink: the rubber stamp.** The violet of a bank's ink stamp appears only
 where the system *proves* something: "Verified ✓" on an answer, "Replayed, no new money
 moved" on a repeated request, "0 problems" after reconciliation. It lands once, when your
-own action caused it, and not at all with reduced motion. Everything else is quiet: one
+own action caused it, and not at all with reduced motion.
+
+**Motion only answers the person.** The theme toggle reveals the new theme as a circle
+spreading from the button (View Transitions; instant where unsupported or with reduced
+motion). A balance counts to its new value after the person's own send or posted top-up,
+never on a page load and never because of a change made elsewhere. Nothing animates on
+entrance.
+
+Everything else is quiet: one
 type family (Hind, from the Indian Type Foundry, which has a real ₹ glyph), Rajdhani's
 squared digits only for the balance, tabular figures for every amount so columns line up
 digit under digit, and Indian grouping everywhere (₹1,24,560.50, never "1.2 lakh").
@@ -172,8 +188,15 @@ brings TypeScript 6.0.3). Both are pinned; `npm run typecheck` is TypeScript 7,
 
 ## 7. Running it
 
+Two demo databases, never mixed: `ledger_demo` is the one you browse (`.env.demo.local`),
+`ledger_e2e` the one Playwright writes to (`.env.e2e.local`; the config refuses any other).
+Every Playwright run and every screenshot project starts from the seed, and every run ends
+with a reset plus a check that each demo balance equals the seed and the ledger reconciles.
+
 ```bash
 npm run migrate && npm run seed:demo            # the ledger and the demo people
+npm run demo:reset                              # start your demo over (demo clients only)
+npm run demo:check                              # balances as seeded? ledger reconciles?
 cd web && npm ci && npx next build
 npx playwright test --project=flows             # starts API, worker, mock provider and web itself
 npm run screenshots                             # docs/images/web/*.png

@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { NavLinks } from '@/components/nav-links';
 import { PersonaSwitcher } from '@/components/persona-switcher';
 import { ThemeToggle } from '@/components/theme-toggle';
+import { tintStyle } from '@/lib/personas';
 import { currentPersona } from '@/lib/server/identity';
 
 export const dynamic = 'force-dynamic';
@@ -13,7 +14,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   if (!persona) redirect('/');
 
   return (
-    <div className="mx-auto flex min-h-[calc(100dvh-2.25rem)] max-w-6xl">
+    <div style={tintStyle(persona)} className="mx-auto flex min-h-[calc(100dvh-2.25rem)] max-w-6xl">
       <nav aria-label="Main" className="sticky top-0 hidden h-[calc(100dvh-2.25rem)] w-56 shrink-0 flex-col gap-8 border-r border-rule px-4 py-6 md:flex">
         <Link href="/" className="px-3 font-figures text-2xl font-semibold">
           ledger

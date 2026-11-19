@@ -29,6 +29,14 @@ const columns = [
       return (
         <div className="flex flex-col">
           <span className={cn(r.status === 'failed' && 'text-ink-soft')}>{particulars(r)}</span>
+          {/* Only the exceptions are marked, as a printed passbook annotates them. */}
+          {r.status !== 'posted' ? (
+            <span className="mt-0.5">
+              <StatusChip status={r.status} />
+            </span>
+          ) : (
+            <StatusChip status={r.status} />
+          )}
           <span className="text-sm text-ink-soft">
             {timeLabel(r.createdAt)}
             {/* Notes are what the sender wrote; a top-up's note is the API's own bookkeeping text. */}
@@ -38,16 +46,31 @@ const columns = [
       );
     },
   }),
+  // Phone: one signed column (− brick, + green); the two columns below take over from sm up.
   column.display({
-    id: 'status',
-    header: 'Status',
-    meta: { className: 'hidden sm:table-cell' },
-    cell: ({ row }) => <StatusChip status={row.original.status} />,
+    id: 'amount',
+    header: 'Amount',
+    meta: { align: 'right', className: 'sm:hidden' },
+    cell: ({ row }) => {
+      const r = row.original;
+      const v = BigInt(r.amountPaise);
+      return (
+        <Money
+          paise={v}
+          signed
+          className={cn(
+            r.status === 'posted' && (v < 0n ? 'money-out' : 'text-money-in'),
+            r.status === 'failed' && 'text-ink-soft line-through',
+            r.status === 'pending' && 'hatch px-1 text-pending',
+          )}
+        />
+      );
+    },
   }),
   column.display({
     id: 'withdrawal',
     header: 'Withdrawal',
-    meta: { align: 'right' },
+    meta: { align: 'right', className: 'hidden sm:table-cell' },
     cell: ({ row }) => {
       const v = BigInt(row.original.amountPaise);
       return v < 0n ? <Money paise={-v} className={cn(row.original.status === 'failed' && 'line-through')} /> : null;
@@ -56,7 +79,7 @@ const columns = [
   column.display({
     id: 'deposit',
     header: 'Deposit',
-    meta: { align: 'right' },
+    meta: { align: 'right', className: 'hidden sm:table-cell' },
     cell: ({ row }) => {
       const r = row.original;
       const v = BigInt(r.amountPaise);
@@ -67,7 +90,7 @@ const columns = [
   column.display({
     id: 'balance',
     header: 'Balance',
-    meta: { align: 'right', className: 'hidden sm:table-cell' },
+    meta: { align: 'right', className: 'col-balance' },
     cell: ({ row }) => (row.original.balanceAfterPaise ? <Money paise={row.original.balanceAfterPaise} /> : <span className="text-sm text-ink-soft">not in balance</span>),
   }),
 ];
@@ -111,7 +134,7 @@ export function Passbook({ accountId, initial }: { accountId: string; initial: P
 
   return (
     <div>
-      <table className="w-full border-collapse">
+      <table className="passbook w-full border-collapse">
         <caption className="sr-only">Passbook, newest entries first</caption>
         <thead>
           {table.getHeaderGroups().map((hg) => (

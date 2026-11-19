@@ -29,5 +29,14 @@ export function paiseOf(text: string): bigint {
 
 export async function totalBalance(page: Page): Promise<bigint> {
   await page.goto('/overview');
-  return paiseOf((await page.locator('#balance-heading + p').innerText()).trim());
+  // The exact figure, not the (possibly still counting) digits on screen.
+  return BigInt((await page.locator('[data-balance="total"] [data-paise]').getAttribute('data-paise'))!);
+}
+
+/** The label of the first <option> whose text starts with `prefix` (labels carry balances that change). */
+export async function optionStartingWith(page: Page, prefix: string): Promise<string> {
+  const labels = await page.locator('option').allInnerTexts();
+  const found = labels.find((l) => l.startsWith(prefix));
+  if (!found) throw new Error(`no option starting with "${prefix}"`);
+  return found;
 }
