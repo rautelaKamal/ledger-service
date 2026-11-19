@@ -2,15 +2,15 @@
 
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { AmountField, fieldSelectClass, readAmount } from '@/components/amount-field';
 import { AnimatedMoney } from '@/components/animated-money';
 import { Money } from '@/components/money';
 import { SecurityArt } from '@/components/security-print';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { secondsLabel } from '@/lib/dates';
 import { newKey } from '@/lib/keys';
-import { formatPaise, parseRupees } from '@/lib/money';
+import { formatPaise } from '@/lib/money';
 import { markMoneyMoved } from '@/lib/money-moved';
 import type { Account, Topup } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -61,10 +61,10 @@ export function TopupFlow({ accounts, maxPaise, initialTopupId, initialKey }: { 
   const [key, setKey] = useState(initialKey);
   const started = useRef(0);
   const done = useRef(false);
-  const paise = parseRupees(amount);
-  // The ledger API's own limit (GET /limits), said before sending; the API refuses above it regardless.
+  // The ledger API's own limit (GET /limits): the field says it, and the button waits
+  // for a valid amount within it; the API refuses anything above it regardless.
   const max = BigInt(maxPaise);
-  const over = paise !== null && paise > max;
+  const { paise, ok: amountOk } = readAmount(amount, max, 'top-up');
 
   const poll = useCallback(async () => {
     if (!topupId) return;
@@ -103,8 +103,7 @@ export function TopupFlow({ accounts, maxPaise, initialTopupId, initialKey }: { 
 
   async function request(e: React.FormEvent): Promise<void> {
     e.preventDefault();
-    if (!paise) return setError('Enter an amount in rupees, for example 5,000.00.');
-    if (over) return setError(`One top-up can add at most ${formatPaise(max)}. Ask for a smaller amount.`);
+    if (!amountOk || !paise) return; // the field says why; the button is disabled meanwhile
     setBusy(true);
     setError(null);
     try {
@@ -151,46 +150,34 @@ export function TopupFlow({ accounts, maxPaise, initialTopupId, initialKey }: { 
   ) : null;
 
   if (!topupId) {
+    // The same form as Send: two columns, the same fields and the same line under the
+    // amount; the box below the button is for the server's answers only.
     return (
-      <div className="flex flex-col gap-6">
-      {strip}
-      <form onSubmit={request} className="flex max-w-xl flex-wrap items-end gap-4">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor={`${ids}-amount`}>Amount in rupees</Label>
-          <Input
-            id={`${ids}-amount`}
-            inputMode="decimal"
-            placeholder="5,000.00"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            className="money h-10 w-40"
-            aria-invalid={amount !== '' && (!paise || over)}
-            aria-describedby={`${ids}-amount-help`}
-          />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor={`${ids}-account`}>To</Label>
-          <select id={`${ids}-account`} value={account} onChange={(e) => setAccount(e.target.value)} className="h-10 rounded-md border border-input bg-surface px-3">
-            {accounts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name.split(', ').at(-1)}
-              </option>
-            ))}
-          </select>
-        </div>
-        <Button type="submit" size="lg" className="h-10" disabled={busy}>
-          {busy ? 'Requesting…' : paise ? `Request a ${formatPaise(paise)} top-up` : 'Request top-up'}
-        </Button>
-        {/* Under the whole row, not the field: the fields' labels stay level. */}
-        <p id={`${ids}-amount-help`} className={cn('w-full text-sm', over ? 'text-failed' : 'text-ink-soft')} aria-live="polite">
-          {over ? `Over the ${formatPaise(max)} limit for one top-up` : `At most ${formatPaise(max)} per top-up`}
-        </p>
+      <div className="flex max-w-2xl flex-col gap-8">
+        {strip}
+        <form onSubmit={request} className="grid gap-5 sm:grid-cols-2">
+          <AmountField id={`${ids}-amount`} value={amount} onChange={setAmount} max={max} what="top-up" placeholder="5,000.00" />
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={`${ids}-account`}>To</Label>
+            <select id={`${ids}-account`} value={account} onChange={(e) => setAccount(e.target.value)} className={fieldSelectClass}>
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name.split(', ').at(-1)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="sm:col-span-2">
+            <Button type="submit" size="lg" disabled={busy || !amountOk}>
+              {busy ? 'Requesting…' : paise ? `Request a ${formatPaise(paise)} top-up` : 'Request top-up'}
+            </Button>
+          </div>
+        </form>
         {error ? (
-          <p role="alert" className="w-full border-l-2 border-failed pl-3 text-failed">
+          <p role="alert" className="border-l-2 border-failed pl-3 text-failed">
             {error}
           </p>
         ) : null}
-      </form>
       </div>
     );
   }

@@ -396,7 +396,7 @@ test('13. amounts line up digit under digit, and both faces draw their own ₹',
   expect(ownRupee).toEqual([true, true]);
 });
 
-test('14. the limits: the forms state them and refuse more before sending; the API refuses it too', async ({ page }) => {
+test('14. the limits: the forms state them and will not send more; the API refuses it too', async ({ page }) => {
   await become(page, 'Meera Iyer');
   const total = await totalBalance(page);
   const sent: string[] = [];
@@ -406,15 +406,13 @@ test('14. the limits: the forms state them and refuse more before sending; the A
   await expect(page.getByText('At most ₹2,00,000.00 per transfer')).toBeVisible();
   await page.getByLabel('Amount in rupees').fill('2,00,000.01');
   await expect(page.getByText('Over the ₹2,00,000.00 limit for one transfer')).toBeVisible();
-  await page.getByRole('button', { name: 'Send ₹2,00,000.01' }).click();
-  await expect(page.getByText('One transfer can move at most ₹2,00,000.00. Send a smaller amount.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Send ₹2,00,000.01' })).toBeDisabled();
 
   await page.goto('/topup');
   await expect(page.getByText('At most ₹1,00,000.00 per top-up')).toBeVisible();
   await page.getByLabel('Amount in rupees').fill('10,00,00,00,000.00'); // the amount found in the review
   await expect(page.getByText('Over the ₹1,00,000.00 limit for one top-up')).toBeVisible();
-  await page.getByRole('button', { name: 'Request a ₹10,00,00,00,000.00 top-up' }).click();
-  await expect(page.getByText('One top-up can add at most ₹1,00,000.00. Ask for a smaller amount.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Request a ₹10,00,00,00,000.00 top-up' })).toBeDisabled();
   expect(sent).toEqual([]); // the browser sent nothing
 
   // The form only repeats what the ledger enforces: past the form, the ledger refuses it too.
@@ -654,4 +652,43 @@ test('22. one name per thing: "Top up" everywhere, "Under the hood" on the phone
   await expect(tabs.getByRole('link', { name: 'Top up' })).toBeVisible();
   await expect(tabs.getByRole('link', { name: 'Under the hood' })).toBeVisible();
   await expect(tabs.getByRole('link', { name: 'System' })).toHaveCount(0);
+});
+
+test('23. Send and Top up are one form: same grid and fields; a field\'s problem is said once, under it; the box below the button is for the server', async ({ page }) => {
+  await become(page, 'Meera Iyer');
+  const layout = async () => {
+    const box = async (l: import('@playwright/test').Locator) => (await l.boundingBox())!;
+    const amount = await box(page.getByLabel('Amount in rupees'));
+    const to = await box(page.getByLabel('To', { exact: true }));
+    const help = await box(page.locator('[id$="-amount-help"]'));
+    return { amountW: Math.round(amount.width), h: Math.round(amount.height), toX: Math.round(to.x - amount.x), toH: Math.round(to.height), helpGap: Math.round(help.y - (amount.y + amount.height)) };
+  };
+  await page.goto('/send');
+  const send = await layout();
+  await page.goto('/topup');
+  expect(await layout()).toEqual(send); // the same columns, the same field sizes, the same helper line under the amount
+
+  for (const path of ['/send', '/topup']) {
+    await page.goto(path);
+    const submit = page.locator('main form button[type="submit"]');
+    await expect(submit, path).toBeDisabled(); // nothing to send yet
+    await page.getByLabel('Amount in rupees').fill('12,34,abc');
+    await expect(page.getByText('Enter rupees, for example 1,200.00')).toHaveCount(1); // once, under the field
+    await expect(page.getByLabel('Amount in rupees')).toHaveAttribute('aria-invalid', 'true');
+    await expect(submit, path).toBeDisabled();
+    await page.getByLabel('Amount in rupees').fill('5,00,000.00');
+    await expect(page.getByText(/^Over the ₹[\d,]+\.00 limit for one (transfer|top-up)$/)).toHaveCount(1);
+    await expect(submit, path).toBeDisabled();
+    await expect(page.locator('main [role="alert"]'), path).toHaveCount(0); // no box for a field's problem
+    await page.getByLabel('Amount in rupees').fill('10.00');
+    await expect(submit, path).toBeEnabled();
+  }
+
+  // The box is for what the server answered, below the button.
+  await page.route('**/api/topups', (route) => route.fulfill({ status: 502, json: { error: 'the ledger API did not answer' } }));
+  await page.locator('main form button[type="submit"]').click();
+  const alert = page.locator('main [role="alert"]');
+  await expect(alert).toHaveText('The top-up was not requested: the ledger API did not answer.');
+  expect((await alert.boundingBox())!.y).toBeGreaterThan((await page.locator('main form button[type="submit"]').boundingBox())!.y);
+  await expect(page.getByText('₹10.00', { exact: true })).toBeVisible(); // the field itself is fine
 });
