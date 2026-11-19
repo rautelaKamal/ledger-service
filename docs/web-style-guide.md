@@ -79,6 +79,8 @@ the whole slip, and the rest of the slip is its description.
 2. The passbook looks printed: entries in printer ink on a page with faint horizontal
    ruling and preprinted column rules (both in the person's tint); the running balance
    is the strongest text, on a slightly darker strip that runs unbroken down the page.
+   An account's history starts with its "Opening balance" (money it already held,
+   brought forward), never with a top-up nobody requested.
 3. Violet appears only when something is proven: Verified, Replayed, 0 problems.
 4. Pending is separate from posted, always (its own strip, hatched, never in the balance).
 5. Motion only answers the user: the theme toggle's circular reveal from the button

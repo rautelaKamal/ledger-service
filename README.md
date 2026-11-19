@@ -76,7 +76,9 @@ never passes through a floating-point number.
 Above that the answer is `400 amount_over_limit` with a message that names the limit; like any
 invalid amount it is not stored under the key, so the key can be used again. `GET /limits`
 returns both (`{ "topupMaxPaise": "10000000", "transferMaxPaise": "20000000" }`); the web app's
-forms read them from there.
+forms read them from there. Money an account already held when its history here begins is
+not a request: it is an **opening balance** (transaction kind `opening`, migration 013),
+double-entry from the bank settlement account, recorded only by `ledger_owner` (the seed).
 
 ```bash
 curl -i -X POST http://localhost:3000/transfers \

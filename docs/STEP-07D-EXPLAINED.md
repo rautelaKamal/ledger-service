@@ -88,7 +88,11 @@ the five reconciliation checks by name.
 `src/limits.ts`. The API refuses anything larger with `400 amount_over_limit` and stores
 nothing under the key. The forms read the limits from `GET /limits`, say them under the
 amount field ("At most ₹2,00,000.00 per transfer") and refuse a larger amount before sending,
-so the page never states a limit the API does not enforce.
+so the page never states a limit the API does not enforce. Money an account already held is
+not a request either: Arjun's shop starts with "Opening balance ₹2,40,000.00", as a real
+passbook does, a double-entry transaction of its own kind (`opening`, migration 013) that only
+`ledger_owner` may record, instead of a top-up larger than the top-up limit. `demo:check`
+fails if any demo top-up or transfer is above a limit.
 
 **Every claim is true for the environment it runs in.** The pages never say "reconciled
 every night" from habit. They read the last recorded run ("Last reconciliation: 0 problems,
@@ -216,6 +220,12 @@ clicks and keep state; they are shipped as JavaScript).
   the page on `/`.
 - **"Reconciliation has not run here yet"** although `demo:check` had just reconciled. The
   check now records its run, and the page says "0 problems, checked at 17:42 IST".
+- **A top-up above the new limit in the seed**: Arjun's ₹2,40,000.00 "opening float" was
+  seeded as a top-up. It is now his opening balance, and his balance is unchanged.
+- **The person link must never be prefetched**: choosing a person is a GET that changes
+  the session, so the slips stay plain links. A test hovers over Arjun's slip and checks
+  that nothing fetched `/api/session` and the person is still Meera; with a prefetching
+  Next.js `<Link>` instead, all three people were fetched the moment they were on screen.
 - **Tests could have written into the browsable demo**: Playwright reused any server already
   listening on its ports, and the demo uses the same ones. It now always starts its own, so
   a running demo fails the run at once instead.
