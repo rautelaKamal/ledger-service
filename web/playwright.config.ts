@@ -34,7 +34,8 @@ export default defineConfig({
   workers: 1, // one shared ledger: flows run in order
   retries: 0,
   forbidOnly: ci,
-  reporter: ci ? [['list'], ['html', { open: 'never' }]] : 'list',
+  // In CI also 'github': each failure becomes an annotation on the run, readable without the logs.
+  reporter: ci ? [['list'], ['github'], ['html', { open: 'never' }]] : 'list',
   timeout: 60_000,
   expect: { timeout: 15_000 },
   use: { baseURL: WEB, trace: 'retain-on-failure', locale: 'en-IN', timezoneId: 'Asia/Kolkata' },
