@@ -42,8 +42,9 @@ Overview header, the account strips on Send and Top up, the person slips on the 
 page), it sits on a flat guilloche: three families of interlaced sine curves, constant
 line weight, one small tile repeated, tinted after a banknote (Meera ₹50 blue, Arjun ₹10
 brown, Kavya ₹20 green). The amount sits in a cleared amount box, as on a cheque, with a
-line of microprint along the edge. In dark mode the print glows faintly, like security
-ink under a UV lamp. The full rules are in [the style guide](web-style-guide.md).
+line of microprint along the edge. In dark mode the print shows in the person's toned tint,
+without glow, like security ink under a UV lamp. The full rules are in
+[the style guide](web-style-guide.md).
 
 **One loud ink: the rubber stamp.** The violet of a bank's ink stamp appears only
 where the system *proves* something: "Verified ✓" on an answer, "Replayed, no new money
@@ -64,9 +65,12 @@ rings.
 
 **Tabular figures, honestly.** The style guide had promised tabular figures from the start,
 and the CSS asked for them, but neither Hind nor Rajdhani has the feature: the browser
-silently ignored it. Each digit of an amount now sits in a fixed-width slot (the width of the
-face's widest digit), so columns line up digit under digit; screen readers read the plain
-amount. A test measures the slots and the column's right edge.
+silently ignored it. Each digit of an amount is now padded by inline margins to a fixed-width
+slot (the width of the face's widest digit, from each digit's measured width per face and
+weight), so columns line up digit under digit. Margins, not inline blocks or a hidden second
+copy: an amount is one run of text, so copying it, finding it with Cmd+F and hearing it with
+a screen reader all give "₹89,906.75" once. Tests measure every digit slot on four screens,
+the column's right edge, and what copy, find and the accessibility tree return.
 
 Everything else is quiet: one
 type family (Hind, from the Indian Type Foundry, which has a real ₹ glyph), Rajdhani's
@@ -78,6 +82,13 @@ sending, the exact request and response the server exchanged with the ledger, in
 `Idempotent-Replayed` header. The top-up page is a five-step timeline from "202 Accepted,
 nothing credited yet" to the signed webhook. "Under the hood" shows the outbox lanes and
 the five reconciliation checks by name.
+
+**Limits, stated where you type and enforced where it counts.** One transfer moves at most
+₹2,00,000.00 and one top-up asks for at most ₹1,00,000.00; the numbers live in one place,
+`src/limits.ts`. The API refuses anything larger with `400 amount_over_limit` and stores
+nothing under the key. The forms read the limits from `GET /limits`, say them under the
+amount field ("At most ₹2,00,000.00 per transfer") and refuse a larger amount before sending,
+so the page never states a limit the API does not enforce.
 
 **Every claim is true for the environment it runs in.** The pages never say "reconciled
 every night" from habit. They read the last recorded run ("Last reconciliation: 0 problems,
@@ -186,7 +197,30 @@ clicks and keep state; they are shipped as JavaScript).
 - **Two accessibility fixes**: the chart's focusable surface inside an `aria-hidden` figure,
   and scrollable code blocks that keyboard users could not reach.
 
-**Results**: 9 Playwright flows; axe (WCAG 2.2 A/AA) on all six screens on desktop and phone,
+**What a review of the live demo found** (each fix has a test that fails without it):
+
+- **No amount limit.** A ₹10,00,00,00,000.00 top-up went through the form and the API. Now
+  the limits above, in the API and in the forms.
+- **Every amount twice in the page's text.** The slotted digits were hidden from screen
+  readers and a visually hidden twin carried the amount, so copy and Cmd+F found it twice
+  (or in a 1 px box). Now one run of text (see "Tabular figures, honestly").
+- **The theme button named the wrong theme** on a first visit that followed a dark system:
+  the name was computed in React, the server could only guess "light", and hydration keeps
+  a mismatched attribute. Now the name is chosen by the same `dark` class as the icon, right
+  from the first paint.
+- **The person slips had no usable name**: the whole slip was the button, so its name was
+  every word on it. Each slip's link is now the line "Continue as Meera Iyer" (its name is
+  exactly what it shows, WCAG 2.5.3), the rest of the slip is its description, and its click
+  area still covers the whole slip. It is a plain link (`GET /api/session`), the most
+  dependable navigation a browser has: a form POST had been aborted in one browser and left
+  the page on `/`.
+- **"Reconciliation has not run here yet"** although `demo:check` had just reconciled. The
+  check now records its run, and the page says "0 problems, checked at 17:42 IST".
+- **Tests could have written into the browsable demo**: Playwright reused any server already
+  listening on its ports, and the demo uses the same ones. It now always starts its own, so
+  a running demo fails the run at once instead.
+
+**Results**: 19 Playwright flows; axe (WCAG 2.2 A/AA) on all six screens on desktop and phone,
 in light and dark; Lighthouse accessibility **100** on all six screens, phone and desktop
 (the requirement was 95).
 
