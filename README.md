@@ -217,6 +217,24 @@ volume created before step 7b lacks pgvector: run the roles file once against it
 (`docker compose -f docker-compose.full.yml exec -T postgres psql -U postgres -d postgres -f - < k8s/base/postgres/init/00-roles.sql`).
 See [docs/STEP-07B-EXPLAINED.md](docs/STEP-07B-EXPLAINED.md).
 
+**Step 7c: the eval.** 50 items (40 questions + 10 prompt-injection attempts) against a seeded
+ledger, expected answers from plain SQL, reported as counts. It calls the real model, so it
+never runs in CI, and it is built for the free tier: it throttles, stops at a budget, resumes,
+and backs off on 503s without counting them as wrong answers.
+
+```bash
+cd agent
+uv run python -m eval.run --label baseline --estimate          # what a run costs; no API calls
+uv run python -m eval.run --label baseline --daily-budget 400  # 50 x 3; re-run to resume
+uv run python -m eval.run --label e1 --subset --features prefetch   # 20 x 2, one change switched on
+uv run python -m eval.report baseline@subset e1                # BEFORE / AFTER, in counts
+uv run python -m eval.trace_latency baseline                   # model / tool / our code, from LangSmith
+uv run python -m eval.langsmith_upload baseline                # dataset + experiment (no model calls)
+```
+
+The improvements are switches (`AGENT_FEATURES=prefetch,answer_tool,...`), so each one is
+measured on its own. See [docs/STEP-07C-EXPLAINED.md](docs/STEP-07C-EXPLAINED.md).
+
 ## Run it on Kubernetes (locally, with kind)
 
 The same images on a one-node Kubernetes cluster inside Docker. Needs `kubectl`, `kind`
@@ -225,7 +243,7 @@ The same images on a one-node Kubernetes cluster inside Docker. Needs `kubectl`,
 
 ```bash
 npm run k8s:up             # create the cluster, build + load images, Secrets, apply, wait
-npm run k8s:smoke          # a transfer, a top-up, metrics internal, NetworkPolicy, reconcile
+npm run k8s:smoke          # a transfer, a top-up, metrics internal, NetworkPolicies, reconcile
 npm run k8s:zero-downtime  # k6 in the cluster while the api is rolled: failed requests = 0
 npm run k8s:hpa-demo       # scale the api 2 -> 4 under load and back
 scripts/k8s/reconcile-now.sh                                   # run the nightly CronJob now
@@ -236,6 +254,10 @@ npm run k8s:down           # delete the cluster
 
 See [docs/STEP-06B-EXPLAINED.md](docs/STEP-06B-EXPLAINED.md) for what every object and
 setting is for, the zero-downtime and HPA results, and why production uses a managed database.
+The assistant runs there too (2 replicas, reachable only from pods labelled `app=web`); its
+keys go into the Secret `agent-secrets` from `agent/.env`, and `SKIP_AGENT_INGEST=1` defers
+embedding the policies when the day's quota is spent. A restart of the kind node container
+loses the cluster (etcd lives in memory); `npm run k8s:down && npm run k8s:up` rebuilds it.
 
 ## Port 5432 already in use?
 
