@@ -240,3 +240,47 @@ def seed(owner: psycopg.Connection[DictRow]) -> bool:
                 "UPDATE transactions SET status = %s WHERE id = %s AND %s <> 'pending'", (t.status, t.id, t.status)
             )
     return True
+
+
+def check_seed(owner: psycopg.Connection[DictRow]) -> list[str]:
+    """Is the eval ledger exactly what seed() builds? Content, not just a marker row.
+
+    Every eval account with its client and the balance its seeded entries give, every
+    seeded transaction in its seeded state, and no other money on the eval accounts.
+    """
+    problems: list[str] = []
+    expected = {key: 0 for key in ACCOUNTS}
+    for t in TRANSACTIONS:
+        if t.status == "posted":
+            expected[t.target] += t.paise
+            if t.source:
+                expected[t.source] -= t.paise
+    for key, a in ACCOUNTS.items():
+        row = owner.execute("SELECT owner_client_id, balance_paise FROM accounts WHERE id = %s", (a.id,)).fetchone()
+        if row is None:
+            problems.append(f"eval account {key}: missing")
+            continue
+        if row["owner_client_id"] != a.client:
+            problems.append(f"eval account {key}: owned by {row['owner_client_id']}, the seed says {a.client}")
+        if row["balance_paise"] != expected[key]:
+            problems.append(f"eval account {key}: {row['balance_paise']} paise, the seed gives {expected[key]}")
+    tx_ids = [t.id for t in TRANSACTIONS]
+    status = {
+        r["id"]: r["status"] for r in owner.execute("SELECT id, status FROM transactions WHERE id = ANY(%s)", (tx_ids,))
+    }
+    for t in TRANSACTIONS:
+        if t.id not in status:
+            problems.append(f"eval transaction {t.key}: missing")
+        elif status[t.id] != t.status:
+            problems.append(f"eval transaction {t.key}: {status[t.id]}, the seed says {t.status}")
+    account_ids = [a.id for a in ACCOUNTS.values()]
+    extra = owner.execute(
+        """SELECT count(DISTINCT transaction_id) AS n FROM (
+             SELECT transaction_id FROM entries WHERE account_id = ANY(%s)
+             UNION ALL SELECT transaction_id FROM topups WHERE account_id = ANY(%s)) x
+           WHERE NOT (transaction_id = ANY(%s))""",
+        (account_ids, account_ids, tx_ids),
+    ).fetchone()
+    if extra and extra["n"]:
+        problems.append(f"{extra['n']} transactions on the eval accounts are not in the seed")
+    return problems

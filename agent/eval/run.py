@@ -13,7 +13,8 @@ run stops cleanly at --max-calls, and when the model API fails (429/503) the
 runner waits 30 s, 60 s, 120 s (with jitter) and then records the attempt as
 `upstream_failed`: counted on its own, never as a wrong answer. Three upstream
 failures in a row stop the run (the quota is probably used up for today).
-Exit status: 0 done, 2 stopped at a budget, 3 stopped after upstream failures.
+Exit status: 0 done, 2 stopped at a budget, 3 stopped after upstream failures, 4 refused by the
+preflight (eval ledger not as seeded, or policy chunks not embedded with the configured model).
 """
 
 import argparse
@@ -40,6 +41,7 @@ from ledger_agent.service import Assistant
 from ledger_agent.tools import LedgerTools
 
 from .instrument import ChatMeter, Meter, MeteredEmbeddings, Throttle, TimedLedgerTools
+from .preflight import preflight
 from .questions import ITEMS, SUBSET, Item
 from .score import score
 from .seed import EVAL_NOW, seed
@@ -104,7 +106,7 @@ def load_label(label: str) -> list[dict[str, Any]]:
 
 
 QUOTA_TZ = ZoneInfo("America/Los_Angeles")  # the Gemini API's per-day quotas reset at midnight Pacific time
-EXIT_BUDGET, EXIT_UPSTREAM = 2, 3
+EXIT_BUDGET, EXIT_UPSTREAM, EXIT_PREFLIGHT = 2, 3, 4
 
 
 def quota_day_start(now: datetime) -> datetime:
@@ -194,6 +196,11 @@ def main(argv: list[str] | None = None) -> int:
     assert settings.owner_database_url, "OWNER_DATABASE_URL must be set (seeding and truth run as the owner)"
     owner = psycopg.connect(settings.owner_database_url, row_factory=dict_row, autocommit=True)
     print("seeded the eval ledger now" if seed(owner) else "eval ledger already seeded")
+    problems = preflight(owner, settings.embedding_model)
+    if problems:
+        print("refusing to run, before any model call:\n  " + "\n  ".join(problems))
+        return EXIT_PREFLIGHT
+    print(f"preflight: the eval ledger is as seeded; every policy chunk is embedded with {settings.embedding_model}")
     truth = Truth(owner)
     meter = Meter()
     chat = build_chat_model(settings)
