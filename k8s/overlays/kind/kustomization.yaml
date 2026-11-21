@@ -22,6 +22,8 @@ images:
     newTag: local
   - name: ledger-agent
     newTag: local
+  - name: ledger-web
+    newTag: local
 
 patches:
   - path: patches/metrics-server-kubelet-insecure-tls.yaml

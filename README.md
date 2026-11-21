@@ -71,6 +71,15 @@ Body (no extra fields allowed):
 `amountPaise` is a **string** holding a positive integer (`^[1-9][0-9]*$`) so the amount
 never passes through a floating-point number.
 
+**Limits per request** (one place: [src/limits.ts](src/limits.ts)): one transfer moves at most
+**₹2,00,000.00** (`"20000000"`), one top-up asks for at most **₹1,00,000.00** (`"10000000"`).
+Above that the answer is `400 amount_over_limit` with a message that names the limit; like any
+invalid amount it is not stored under the key, so the key can be used again. `GET /limits`
+returns both (`{ "topupMaxPaise": "10000000", "transferMaxPaise": "20000000" }`); the web app's
+forms read them from there. Money an account already held when its history here begins is
+not a request: it is an **opening balance** (transaction kind `opening`, migration 013),
+double-entry from the bank settlement account, recorded only by `ledger_owner` (the seed).
+
 ```bash
 curl -i -X POST http://localhost:3000/transfers \
   -H 'Content-Type: application/json' \
@@ -82,7 +91,7 @@ curl -i -X POST http://localhost:3000/transfers \
 | Status | When |
 |---|---|
 | `201 { "transactionId": … }` | money moved (or, with `Idempotent-Replayed: true`, moved earlier under this key) |
-| `400` | invalid body or amount, same account, missing `Idempotency-Key` |
+| `400` | invalid body or amount, amount over the limit (`amount_over_limit`), same account, missing `Idempotency-Key` |
 | `401` | missing `X-Client-Id` |
 | `404` | an account does not exist |
 | `409` + `Retry-After: 1` | the first request with this key is still running after 5 s (configurable) |
@@ -124,6 +133,7 @@ curl -X POST http://localhost:4100/payments/<paymentId>/succeed -H 'Content-Type
 | Status (POST /topups) | When |
 |---|---|
 | `202 { topupId, status: "pending" }` | top-up recorded and the provider call queued; money arrives by webhook |
+| `400` | invalid body or amount; more than ₹1,00,000.00 (`amount_over_limit`, nothing stored) |
 | `404` / `422` | unknown account; not a user account; currency with no settlement account |
 
 | Status (POST /webhooks/provider) | When |
@@ -234,6 +244,32 @@ uv run python -m eval.langsmith_upload baseline                # dataset + exper
 
 The improvements are switches (`AGENT_FEATURES=prefetch,answer_tool,...`), so each one is
 measured on its own. See [docs/STEP-07C-EXPLAINED.md](docs/STEP-07C-EXPLAINED.md).
+
+## The web app (`web/`, step 7d)
+
+A demo front end for recruiters and engineers: pick a fictional person, see their passbook,
+send money and then the same request again (it moves nothing), follow a top-up from
+"202 Accepted" to the signed webhook, ask the assistant, and run 200 concurrent transfers
+followed by reconciliation. The browser only talks to the Next.js server, which adds
+`X-Client-Id` itself; client ids and internal URLs never reach the page.
+
+![Overview](docs/images/web/2-overview-desktop-light.png)
+
+```bash
+npm run seed:demo                     # the demo people (as ledger_owner, idempotent)
+npm run demo:reset                    # start the demo over: demo clients only, in one transaction
+npm run demo:check                    # every demo balance as seeded, and the ledger reconciles
+cd web && npm ci && npx next build
+npx playwright test --project=flows   # starts the API, worker, mock provider and web itself
+npm run screenshots                   # docs/images/web/, desktop + phone, light + dark
+npm run lighthouse                    # accessibility, fails below 95
+```
+
+Compose: `docker compose -f docker-compose.full.yml run --rm seed-demo`, then
+`docker compose -f docker-compose.full.yml up -d web`, then open http://localhost:3200.
+The assistant page runs a script over the person's live data by default
+(`ASSISTANT_MODE=fixtures`, no model call); `ASSISTANT_MODE=agent` uses the real assistant.
+See [docs/STEP-07D-EXPLAINED.md](docs/STEP-07D-EXPLAINED.md).
 
 ## Run it on Kubernetes (locally, with kind)
 

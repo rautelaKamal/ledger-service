@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Creates the two Secrets from your local .env. Nothing here is ever committed.
+# Creates the Secrets from your local .env. Nothing here is ever committed.
 #
 #   scripts/k8s/secrets.sh                 (ENV_FILE=.env by default)
 #
@@ -7,6 +7,9 @@
 #                   OWNER/DATABASE/WORKER/RECONCILER_DATABASE_URL (in-cluster
 #                   host "postgres"), WEBHOOK_SECRET
 #   grafana-admin   admin-password  (GRAFANA_ADMIN_PASSWORD, default admin-local-only)
+#   web-secrets     SESSION_SECRET  signs the web demo's persona cookie: WEB_SESSION_SECRET
+#                   from .env, else the value already in the cluster (so a redeploy
+#                   does not log everyone out), else a new random one
 #
 # The passwords are taken from the URLs in .env, so one file stays the source
 # of truth. Passwords with URL-special characters (@ : / %) would have to be
@@ -70,6 +73,12 @@ fi
 kc create secret generic agent-secrets ${agent_args[@]+"${agent_args[@]}"} \
   --dry-run=client -o yaml | kc apply -f - >/dev/null
 
-echo "secrets ledger-secrets, grafana-admin and agent-secrets (${#agent_args[@]} values from $AGENT_ENV_FILE) written to $CTX/$NS"
+SESSION_SECRET=$(val WEB_SESSION_SECRET)
+[ -n "$SESSION_SECRET" ] || SESSION_SECRET=$(kc get secret web-secrets -o jsonpath='{.data.SESSION_SECRET}' 2>/dev/null | base64 -d 2>/dev/null || true)
+[ -n "$SESSION_SECRET" ] || SESSION_SECRET=$(openssl rand -base64 48 | tr -d '\n')
+kc create secret generic web-secrets --from-literal=SESSION_SECRET="$SESSION_SECRET" \
+  --dry-run=client -o yaml | kc apply -f - >/dev/null
+
+echo "secrets ledger-secrets, grafana-admin, agent-secrets (${#agent_args[@]} values from $AGENT_ENV_FILE) and web-secrets written to $CTX/$NS"
 echo "(variable names in agent-secrets, never values: $(printf '%s\n' ${agent_args[@]+"${agent_args[@]}"} | sed -E 's/^--from-literal=([A-Z_]+)=.*/\1/' | tr '\n' ' '))"
 case $APP_PW in *_local) echo "note: these are the LOCAL default passwords from .env; fine for kind, never for a real cluster" ;; esac

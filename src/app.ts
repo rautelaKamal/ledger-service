@@ -2,10 +2,12 @@ import express from 'express';
 import { requestIdFrom, runWithRequestId } from './context.js';
 import type { Pool } from './db.js';
 import { errorBody } from './http/errors.js';
+import { readsRouter } from './http/reads.js';
 import { topupsRouter } from './http/topups.js';
 import { transfersRouter } from './http/transfers.js';
 import { webhooksRouter } from './http/webhooks.js';
 import type { IdempotentOptions } from './idempotency.js';
+import { TOPUP_MAX_PAISE, TRANSFER_MAX_PAISE } from './limits.js';
 import { logger } from './logger.js';
 import { createApiMetrics, type ApiMetrics } from './metrics.js';
 import { checkReadiness } from './readiness.js';
@@ -106,9 +108,16 @@ export function createApp(pool: Pool, options: AppOptions): express.Express {
     });
   }
 
+  // What one request may move (src/limits.ts), so a client can say so before it sends.
+  // Paise as strings, like every amount in this API. The same for every caller.
+  app.get('/limits', (_req, res) => {
+    res.status(200).json({ topupMaxPaise: TOPUP_MAX_PAISE.toString(), transferMaxPaise: TRANSFER_MAX_PAISE.toString() });
+  });
+
   const idempotency = { ...(options.keyClaimTimeoutMs !== undefined ? { keyClaimTimeoutMs: options.keyClaimTimeoutMs } : {}) };
   app.use(transfersRouter(pool, metrics, idempotency));
   app.use(topupsRouter(pool, metrics, idempotency));
+  app.use(readsRouter(pool));
 
   // Last resort. Express 5 routes rejected promises here automatically.
   const errorHandler: express.ErrorRequestHandler = (err, _req, res, _next) => {

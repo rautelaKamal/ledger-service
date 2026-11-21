@@ -4,6 +4,7 @@ import { createPool } from './db.js';
 import { logger } from './logger.js';
 import { startMetricsServer } from './metrics-server.js';
 import { createApiMetrics } from './metrics.js';
+import { createSystemService } from './system/service.js';
 
 const config = loadConfig();
 const pool = createPool(config.DATABASE_URL);
@@ -17,7 +18,12 @@ const app = createApp(pool, {
 });
 
 // Internal metrics port first, so the "listening" line means both are up.
-const metricsServer = config.METRICS_PORT === undefined ? undefined : await startMetricsServer(metrics.registry, config.METRICS_PORT);
+// Its /system routes read the outbox and reconciliation history as ledger_reconciler,
+// through a small pool of their own: the API's own role cannot see the outbox.
+const systemPool = config.RECONCILER_DATABASE_URL === undefined ? undefined : createPool(config.RECONCILER_DATABASE_URL, { max: 2 });
+const system = systemPool === undefined ? undefined : createSystemService(systemPool, config.SYSTEM_COOLDOWN_SECONDS);
+const metricsServer =
+  config.METRICS_PORT === undefined ? undefined : await startMetricsServer(metrics.registry, config.METRICS_PORT, system);
 const server = app.listen(config.PORT, () => {
   logger.info({ port: config.PORT, metrics_port: config.METRICS_PORT ?? config.PORT }, 'api listening');
 });
@@ -47,8 +53,7 @@ function shutdown(signal: string): void {
   server.close(() => {
     // Metrics stayed scrapeable while requests drained; now they can go too.
     metricsServer?.close();
-    void pool
-      .end()
+    void Promise.all([pool.end(), systemPool?.end()])
       .then(() => {
         logger.info('shutdown complete');
         process.exit(0);

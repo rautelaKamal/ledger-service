@@ -1,0 +1,295 @@
+# Step 7d, explained: a face for the ledger
+
+Steps 1 to 7c built a ledger that is correct, safe and observable, and an assistant that
+cannot lie about money. None of it could be *seen*. Step 7d is a web app whose job is to
+let a recruiter or an engineer understand that in thirty seconds, and then try to break it.
+
+```
+src/http/reads.ts                    owner-scoped reads: accounts, the passbook, balance history, a top-up's timeline
+src/system/service.ts                outbox lanes, reconciliation, the chaos slot: on the API's INTERNAL port
+migrations/011_system_actions.sql    the cooldown for "reconcile now" and the chaos test, shared by every replica
+scripts/seed-demo.ts                 three fictional people, shops, a chaos pair, 30 days of history
+web/                                 Next.js 16: pages, route handlers, Playwright tests
+web/lib/server/                      everything only the web SERVER may do (client ids, internal URLs)
+k8s/base/web/                        Deployment, Service, NetworkPolicy: the only public entry point
+docs/images/web/                     every screen, desktop and phone, light and dark
+```
+
+| | |
+|---|---|
+| ![Pick a person](images/web/1-pick-desktop-light.png) | ![Overview](images/web/2-overview-desktop-dark.png) |
+| ![Send, then the same request again](images/web/3-send-desktop-light.png) | ![The assistant](images/web/5-assistant-desktop-dark.png) |
+
+---
+
+## 1. Design decisions, and why
+
+**A passbook, not a dashboard.** An Indian bank passbook is the most familiar picture of
+money in this market, and it is exactly what an engineer trusts: dated rows with
+Withdrawal, Deposit and a running Balance, where every line can be checked against the
+one above it. The transaction list *is* a passbook, grouped by day. The running balance
+comes from the API (the sum of the account's entries, the same rule reconciliation
+checks), so the page shows the ledger's own arithmetic, not the browser's.
+
+**The balance dominates; pending is never mixed with posted.** The total is the largest
+thing on the screen. A top-up waiting for the bank is not in it: it sits in its own
+"In transit, not in your balance" strip, amber *and* hatched (never colour alone), and in
+the passbook it says "not in balance" where the balance would be. A failed top-up stays in
+the passbook, struck through, so nobody wonders where it went.
+
+**One bold element: a cheque's security print.** Wherever a balance is the subject (the
+Overview header, the account strips on Send and Top up, the person slips on the landing
+page), it sits on a flat guilloche: three families of interlaced sine curves, constant
+line weight, one small tile repeated, tinted after a banknote (Meera ₹50 blue, Arjun ₹10
+brown, Kavya ₹20 green). The amount sits in a cleared amount box, as on a cheque, with a
+line of microprint along the edge. In dark mode the print shows in the person's toned tint,
+without glow, like security ink under a UV lamp. The full rules are in
+[the style guide](web-style-guide.md).
+
+**One loud ink: the rubber stamp.** The violet of a bank's ink stamp appears only
+where the system *proves* something: "Verified ✓" on an answer, "Replayed, no new money
+moved" on a repeated request, "0 problems" after reconciliation. It lands once, when your
+own action caused it, and not at all with reduced motion.
+
+**Motion only answers the person.** The theme toggle reveals the new theme as a circle
+spreading from the button (View Transitions; instant where unsupported or with reduced
+motion). A balance counts to its new value after the person's own send or posted top-up,
+never on a page load and never because of a change made elsewhere. Nothing animates on
+entrance.
+
+**The page is the person's paper.** In light mode each person's pages are printed on their
+own lightly tinted cheque paper (blue, rose-taupe, green), so switching person changes the
+whole page; in dark mode every page is deep ink blue-black. The person's tint shows only on
+quiet lines: the nav marker, the chart line, the passbook's ruling and balance strip, focus
+rings.
+
+**Tabular figures, honestly.** The style guide had promised tabular figures from the start,
+and the CSS asked for them, but neither Hind nor Rajdhani has the feature: the browser
+silently ignored it. Each digit of an amount is now padded by inline margins to a fixed-width
+slot (the width of the face's widest digit, from each digit's measured width per face and
+weight), so columns line up digit under digit. Margins, not inline blocks or a hidden second
+copy: an amount is one run of text, so copying it, finding it with Cmd+F and hearing it with
+a screen reader all give "₹89,906.75" once. Tests measure every digit slot on four screens,
+the column's right edge, and what copy, find and the accessibility tree return.
+
+Everything else is quiet: one
+type family (Hind, from the Indian Type Foundry, which has a real ₹ glyph), Rajdhani's
+squared digits only for the balance, tabular figures for every amount so columns line up
+digit under digit, and Indian grouping everywhere (₹1,24,560.50, never "1.2 lakh").
+
+**Show the internals engineers trust.** The Send page prints the idempotency key and, after
+sending, the exact request and response the server exchanged with the ledger, including the
+`Idempotent-Replayed` header. The top-up page is a five-step timeline from "202 Accepted,
+nothing credited yet" to the signed webhook. "Under the hood" shows the outbox lanes and
+the five reconciliation checks by name.
+
+**Limits, stated where you type and enforced where it counts.** One transfer moves at most
+₹2,00,000.00 and one top-up asks for at most ₹1,00,000.00; the numbers live in one place,
+`src/limits.ts`. The API refuses anything larger with `400 amount_over_limit` and stores
+nothing under the key. The forms read the limits from `GET /limits`, say them under the
+amount field ("At most ₹2,00,000.00 per transfer") and refuse a larger amount before sending,
+so the page never states a limit the API does not enforce. Money an account already held is
+not a request either: Arjun's shop starts with "Opening balance ₹2,40,000.00", as a real
+passbook does, a double-entry transaction of its own kind (`opening`, migration 013) that only
+`ledger_owner` may record, instead of a top-up larger than the top-up limit. `demo:check`
+fails if any demo top-up or transfer is above a limit.
+
+**Every claim is true for the environment it runs in.** The pages never say "reconciled
+every night" from habit. They read the last recorded run ("Last reconciliation: 0 problems,
+checked at 17:42 IST. That was 4 min ago."): a "Run reconciliation now", the CronJob, or a
+`demo:check` (which records its run like any other) and mention a schedule only when
+`RECONCILE_SCHEDULE` says one exists. It is set
+in Kubernetes, where a CronJob runs at 02:00 in `Asia/Kolkata`, and nowhere else. Compose has
+no such job, so the page there says "Nothing runs it on a schedule in this environment."
+Likewise "Grafana is not linked in this environment" when no URL is configured, and the
+top-up timeline says "the time it happened is not recorded" for the one step whose time the
+API cannot see (by design, it cannot read the outbox).
+
+**The assistant costs nothing in the demo, and says so.** While the eval owns the Gemini
+quota, the Assistant page runs in `fixtures` mode: a small script answers four kinds of
+question **from the person's live data** (recorded text would stop being true the moment
+they sent money), cites the accounts, transactions and policy sections it used, and checks
+every amount in its answer against what it fetched, the same rule as the real verifier. The
+page says plainly: "a script answered from your live ledger data; no AI model was called."
+The policy sections it quotes live in `policies.json`, and CI fails if any of them drifts
+from `agent/policies/` by a single word. With `ASSISTANT_MODE=agent` the same page talks to
+the real assistant.
+
+**Real states, not just the happy path.** Every page has an empty state that says what to do
+("Nothing is waiting for the bank. Top up to watch one travel."), a loading state, and
+errors that say what happened without apologising ("The ledger API did not answer…").
+
+## 2. Why the browser never sees `X-Client-Id`
+
+`X-Client-Id` is the ledger's stand-in for authentication: whoever sends it *is* that client.
+If the browser held it, anyone could open the developer tools, change one header, and spend
+someone else's money. (The API would still refuse spending from an account you do not own,
+but you would now *be* the other client.) So:
+
+- The cookie holds only the persona's **key** (`meera`), signed with HMAC so it cannot be
+  edited into `arjun`. It is `httpOnly`: page scripts cannot read it.
+- The client id (`demo-meera`) is looked up **on the web server** (`lib/server/identity.ts`)
+  and added to server-to-server requests in `lib/server/ledger.ts`, the only module that
+  talks to the ledger. That module imports `server-only`: if any browser code ever imported
+  it, the build would fail.
+- The browser only ever calls the web server's own routes (`/api/transfers`, `/api/ask`, …).
+  Internal URLs (the API, its internal port, the assistant, the mock provider) are in
+  server-side environment variables and never reach the page.
+
+A Playwright test proves it on every run: it records every request the browser makes and
+every response it receives across all six screens, and fails if a request carries
+`X-Client-Id` or any response contains a client id. Another test edits the cookie by hand
+and is sent back to the picker.
+
+This also matches the network: the assistant's NetworkPolicy (7c) admits only pods labelled
+`app=web`, and the web app's own policy lets it reach only the API, the assistant, the mock
+provider and DNS. It is the one public entry point; on k3s (6c) Traefik routes to it and to
+nothing else.
+
+## 3. Server components and client components
+
+Next.js renders some components **on the server** (they can read cookies, call internal
+services, hold secrets; their output is HTML) and some **in the browser** (they can react to
+clicks and keep state; they are shipped as JavaScript).
+
+- **Server components** do every *read*: the picker, the Overview's balance, chart data and
+  first passbook page, the Send page's account lists. They call the ledger directly from the
+  server, so the first paint already contains real numbers, with no loading spinner and no
+  API exposed to the browser for it.
+- **Client components** do only what needs interaction: the Send form and its replay button,
+  the top-up timeline that polls every 1.5 s, "Show older entries", the chat, the chaos
+  button, the theme toggle, the chart's tooltips. They call the web server's route handlers,
+  never the ledger.
+- The line between them is the security line: anything under `lib/server/` is server-only,
+  and a client component may import its *types* (erased at build time) but never its code.
+
+## 4. The backend additions
+
+- **Owner-scoped reads.** `GET /accounts`, the passbook with cursor pagination
+  (`(created_at, id)` keyset, the timestamp carried in Postgres's own text form so no
+  microseconds are lost), `GET /accounts/:id/balance-history` (closing balance per IST day)
+  and `GET /topups/:id`. "Not yours" answers byte for byte like "does not exist", as the
+  writes do since 7a. Each ownership filter was removed on purpose once: a test failed every time.
+- **"Under the hood" lives on the internal port.** `/system/status`, `/system/reconcile` and
+  the chaos slot are served next to `/metrics` on port 9100, which the public Service does not
+  expose, through a pool that logs in as `ledger_reconciler` (read-only on the ledger). Without
+  `RECONCILER_DATABASE_URL` those routes answer 503 and say why.
+- **A cooldown that holds across replicas.** "Reconcile now" and the chaos test may start once a
+  minute. An in-memory timer would allow one per replica, so the rule lives in the database: a
+  starter takes an advisory lock for the action, looks at the newest `system_actions` row, and
+  inserts only if it is old enough. Five racing "replicas" in a test: exactly one wins (and
+  without the lock, several do). The page shows "Available again in 42 s".
+- **The chaos test**: 200 transfers of ₹1.00 at the same moment through the public API, half
+  A→B and half B→A between two accounts nobody can pick, all fighting over the same two rows.
+  The page reports the answers, the latency, the pair's combined balance before and after, and
+  the reconciliation that ends the run.
+
+## 5. What the tests found
+
+- **A keep-alive race.** The chaos test failed the first time with dozens of `ECONNRESET`:
+  the web server reused pooled connections at the moment the API closed them as idle. The fix
+  is the ledger's own idea: money-moving requests are retried **with the same Idempotency-Key**,
+  so if the first attempt did reach the ledger, the retry is answered from the record and moves
+  nothing. The chaos result counts such replays separately.
+- **An honest timeout.** All 200 transfers lock the same two rows, so the ledger serves them
+  one after another; the last answer took longer than the web server's 8-second default. The
+  chaos run waits 30 s and reports anything slower as "no answer", not as a failure (the pair's
+  total says whether it posted).
+- **A flaky accessibility check.** axe occasionally failed `color-contrast` on the stamp. It
+  was being measured mid-animation, while the stamp fades in. Stretched to 3 s, the failure
+  reproduced every time; the test helper now waits for running animations first.
+- **Two accessibility fixes**: the chart's focusable surface inside an `aria-hidden` figure,
+  and scrollable code blocks that keyboard users could not reach.
+
+**What a review of the live demo found** (each fix has a test that fails without it):
+
+- **No amount limit.** A ₹10,00,00,00,000.00 top-up went through the form and the API. Now
+  the limits above, in the API and in the forms.
+- **Every amount twice in the page's text.** The slotted digits were hidden from screen
+  readers and a visually hidden twin carried the amount, so copy and Cmd+F found it twice
+  (or in a 1 px box). Now one run of text (see "Tabular figures, honestly").
+- **The theme button named the wrong theme** on a first visit that followed a dark system:
+  the name was computed in React, the server could only guess "light", and hydration keeps
+  a mismatched attribute. Now the name is chosen by the same `dark` class as the icon, right
+  from the first paint.
+- **The person slips had no usable name**: the whole slip was the button, so its name was
+  every word on it. Each slip's link is now the line "Continue as Meera Iyer" (its name is
+  exactly what it shows, WCAG 2.5.3), the rest of the slip is its description, and its click
+  area still covers the whole slip. It is a plain link (`GET /api/session`), the most
+  dependable navigation a browser has: a form POST had been aborted in one browser and left
+  the page on `/`.
+- **"Reconciliation has not run here yet"** although `demo:check` had just reconciled. The
+  check now records its run, and the page says "0 problems, checked at 17:42 IST".
+- **A top-up above the new limit in the seed**: Arjun's ₹2,40,000.00 "opening float" was
+  seeded as a top-up. It is now his opening balance, and his balance is unchanged.
+- **The person link must never be prefetched**: choosing a person is a GET that changes
+  the session, so the slips stay plain links. A test hovers over Arjun's slip and checks
+  that nothing fetched `/api/session` and the person is still Meera; with a prefetching
+  Next.js `<Link>` instead, all three people were fetched the moment they were on screen.
+- **The demo assistant answered questions it does not know**: "How much did I send to
+  Arjun this month?" and "Show me Arjun's balance" both got Meera's total, stamped
+  Verified, because any "how much" or "balance" matched. It now answers only questions it
+  clearly supports; anything else gets the list of what it answers, a question about
+  someone else's money is refused before any data is read, and neither carries a stamp.
+- **Seed notes that did not fit the payee** ("tea and snacks" at the power company): each
+  shop now has its own notes, and `demo:check` fails on one that does not fit.
+- **One key generator**: "Start a new transfer" made a bare UUID. Every key the forms send
+  now comes from `lib/keys.ts`, as `web-transfer-…` or `web-topup-…`.
+- **One form, one name**: Top up now has Send's layout and amount field, a field's problem
+  is said once under the field, the button waits for a valid amount, and the pages say
+  "Top up" and "Under the hood" everywhere.
+- **Tests could have written into the browsable demo**: Playwright reused any server already
+  listening on its ports, and the demo uses the same ones. It now always starts its own, so
+  a running demo fails the run at once instead.
+
+**Results**: 19 Playwright flows; axe (WCAG 2.2 A/AA) on all six screens on desktop and phone,
+in light and dark; Lighthouse accessibility **100** on all six screens, phone and desktop
+(the requirement was 95).
+
+## 6. Two TypeScripts, on purpose
+
+TypeScript 7 is the native compiler and ships without a programmatic API (one is planned for
+7.1). typescript-eslint, which the Next.js lint rules depend on, needs that API. So `web/`
+follows the TypeScript team's documented side-by-side setup: `tsc` is 7.0.2 (installed as
+`@typescript/native`), and anything that does `require('typescript')` gets the TypeScript 6
+API through Microsoft's compatibility package `@typescript/typescript6` (6.0.2, which itself
+brings TypeScript 6.0.3). Both are pinned; `npm run typecheck` is TypeScript 7,
+`npm run lint` uses the 6 API. When typescript-eslint supports 7.1, the alias goes away.
+
+## 7. Running it
+
+Two demo databases, never mixed: `ledger_demo` is the one you browse (`.env.demo.local`),
+`ledger_e2e` the one Playwright writes to (`.env.e2e.local`; the config refuses any other).
+Every Playwright run and every screenshot project starts from the seed, and every run ends
+with a reset plus a check that each demo balance equals the seed and the ledger reconciles.
+
+```bash
+npm run migrate && npm run seed:demo            # the ledger and the demo people
+npm run demo:reset                              # start your demo over (demo clients only)
+npm run demo:check                              # balances as seeded? ledger reconciles?
+cd web && npm ci && npx next build
+npx playwright test --project=flows             # starts API, worker, mock provider and web itself
+npm run screenshots                             # docs/images/web/*.png
+npm run lighthouse                              # fails below 95
+docker compose -f docker-compose.full.yml up -d web   # http://localhost:3200
+```
+
+## 8. Questions
+
+1. The cookie contains `meera.<signature>`, not the client id. What would an attacker be able to
+   do if it contained `demo-meera` unsigned, and which part of the ledger would still stop them?
+2. Why is the running balance computed by the API from entries rather than by the browser from
+   the rows it shows? Name a case where the browser's version would be wrong.
+3. The chaos test's retries reuse the Idempotency-Key. What would go wrong if a retry generated
+   a new key, and how would the page have shown it?
+4. The cooldown is a database row plus an advisory lock. Why not a `setTimeout` in the API, and
+   why is the lock needed when there is already a row to look at?
+5. Which components here run on the server and which in the browser, and what decides it? What
+   would break if the Overview page became a client component?
+6. The landing page says "Nothing runs it on a schedule in this environment" in compose and
+   "every night at 02:00 IST" in Kubernetes. Where does each sentence come from, and what keeps
+   the second one true?
+7. Pending top-ups are amber *and* hatched, failed ones red *and* struck through. Why both, and
+   which tests would catch a version that used colour alone?
+8. A test passed nine times and failed once. Walk through how you would decide whether it is the
+   code, the test or the machine, using the stamp-contrast failure as the example.

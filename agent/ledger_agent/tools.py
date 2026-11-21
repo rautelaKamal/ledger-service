@@ -76,7 +76,7 @@ class TransactionSummary(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     transaction_id: UUID
-    kind: Literal["transfer", "topup", "refund"]
+    kind: Literal["transfer", "topup", "refund", "opening"]
     status: Literal["pending", "posted", "failed"]
     note: str | None
     created_at: datetime
@@ -120,7 +120,7 @@ class TransactionDetail(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     transaction_id: UUID
-    kind: Literal["transfer", "topup", "refund"]
+    kind: Literal["transfer", "topup", "refund", "opening"]
     status: Literal["pending", "posted", "failed"]
     note: str | None
     created_at: datetime

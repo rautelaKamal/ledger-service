@@ -1,0 +1,10 @@
+# Only what `next build` needs. No env files, no test output, no installed modules.
+node_modules
+.next
+.env*
+e2e
+test-results
+playwright-report
+playwright.config.ts
+scripts
+*.tsbuildinfo

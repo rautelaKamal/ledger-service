@@ -9,7 +9,7 @@ import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
 import { MockProvider } from '../mock-provider/provider.js';
 import { signWebhook } from '../mock-provider/signature.js';
 import { createPool, type Pool } from '../src/db.js';
@@ -200,9 +200,11 @@ describe('health, readiness and shutdown', () => {
     let resolved: boolean | undefined;
     const waiting = waitUntilReady(workerPool, { migrationsDir: dir, intervalMs: 100, onNotReady: (r) => void reports.push(r) }).then((v) => (resolved = v));
 
-    await new Promise((r) => setTimeout(r, 450));
-    expect(resolved).toBeUndefined(); // still waiting ...
-    expect(reports.length).toBeGreaterThanOrEqual(3); // ... and checking regularly
+    // Wait for three checks rather than sleeping a fixed 450 ms: on a busy machine the
+    // first database round trip alone can take longer than that (seen with Docker's VM
+    // saturated), and "fewer than 3 checks in 450 ms" says nothing about readiness.
+    await vi.waitFor(() => expect(reports.length).toBeGreaterThanOrEqual(3), { timeout: 4000, interval: 50 });
+    expect(resolved).toBeUndefined(); // still waiting after three checks ...
     expect(reports[0]).toMatchObject({ ready: false, checks: { database: 'up', migrations: 'pending' }, pending: ['999_not_applied_yet.sql'] });
 
     await rm(extra); // "the migrate Job finished"

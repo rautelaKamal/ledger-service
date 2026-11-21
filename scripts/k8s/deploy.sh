@@ -47,9 +47,16 @@ else
   log "no GOOGLE_API_KEY in agent-secrets: skipping policy ingestion (the agent will answer 503)"
 fi
 
+# The web demo's people (does nothing when they exist). Needs the migrations.
+log "seeding the web demo's fictional people (seed-demo Job)"
+kc delete job seed-demo --ignore-not-found --wait=true >/dev/null
+kall apply -k "$OVERLAY/seed-demo" >/dev/null
+if ! wait_job seed-demo 120; then kc logs job/seed-demo || true; die "seed-demo Job failed"; fi
+kc logs job/seed-demo | tail -3
+
 log "waiting for rollouts"
 kc rollout status statefulset/postgres --timeout=180s
-for d in api worker-commands worker-events mock-provider prometheus grafana agent; do
+for d in api worker-commands worker-events mock-provider prometheus grafana agent web; do
   kc rollout status deployment/"$d" --timeout=180s
 done
 kall -n kube-system rollout status deployment/metrics-server --timeout=180s

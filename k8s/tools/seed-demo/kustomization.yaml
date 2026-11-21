@@ -1,0 +1,6 @@
+# The web demo's people. Apply through an overlay (k8s/overlays/kind/seed-demo).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ledger
+resources:
+  - job.yaml
