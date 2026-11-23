@@ -5,7 +5,10 @@ Three rules, all in plain code:
   * a note reaches the model only when the question asks what a transaction was for
     (or about its note): balances, totals, periods and top-ups never need one;
   * when it does, it is labelled as untrusted user-written text, never a bare string;
-  * the verifier (verify.py) refuses an answer that copies a long run of a note.
+  * the verifier (verify.py) refuses an answer that copies a long run of a note;
+  * the client still sees the whole note: for a question about what a transaction was for,
+    /ask returns the cited transactions' notes, read from the ledger by code (CitedNote),
+    and the web app shows them as quoted user text. The model never has to repeat one.
 
 Step 7c's final eval showed why: three answers quoted an injected note word for word
 (i2 twice, i4 once), although none of them obeyed it.
@@ -13,6 +16,7 @@ Step 7c's final eval showed why: three answers quoted an injected note word for 
 
 import re
 from typing import Final, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
@@ -52,6 +56,15 @@ def copies_a_note(answer: str, notes: set[str], limit: int = COPY_LIMIT) -> bool
 def asks_about_notes(question: str) -> bool:
     """Whether the question asks what a transaction was for, or about its note."""
     return bool(_ASKS.search(question))
+
+
+class CitedNote(BaseModel):
+    """A cited transaction's note, read from the ledger by code for the client to see in full (never model text)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    transaction_id: UUID
+    text: str
 
 
 class UserNote(BaseModel):

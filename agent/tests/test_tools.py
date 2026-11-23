@@ -172,3 +172,15 @@ def test_notes_come_only_when_asked_for_and_labelled_as_user_written(tools: Ledg
     explained = tools.explain_transaction(ctx, tx, include_notes=True)
     assert asked[tx].note == note and explained.note == note
     assert f'"kind":"{UNTRUSTED}"' in explained.model_dump_json()
+
+
+def test_notes_of_reads_only_the_callers_own_transactions(tools: LedgerTools, seed: Seed) -> None:
+    ctx, other, third = seed.client(), seed.client(), seed.client()
+    acct = seed.account(ctx, "main")
+    payee = seed.account(other, "payee")
+    seed.posted("topup", seed.settlement(), acct, 1_000)
+    mine = seed.posted("transfer", acct, payee, 400, note="lunch with the team")
+    bare = seed.posted("transfer", acct, payee, 100)
+    theirs = seed.posted("transfer", payee, seed.account(third, "x"), 50, note="not yours")
+    assert tools.notes_of(ctx, [mine, bare, theirs]) == {mine: "lunch with the team"}
+    assert tools.notes_of(ctx, []) == {}

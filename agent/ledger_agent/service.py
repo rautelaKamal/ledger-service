@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from time import perf_counter
+from uuid import UUID
 
 import psycopg
 from langchain_core.embeddings import Embeddings
@@ -16,6 +17,7 @@ from .config import Settings
 from .dates import now_utc
 from .db import ClientContext, client_scope
 from .graph import Deps, run_question
+from .notes import CitedNote, asks_about_notes
 from .runs import RATE_WINDOW, RateLimitedError, RunRecord, insert_run, questions_in_window
 from .tools import LedgerTools
 from .verify import Citation
@@ -27,6 +29,7 @@ class AskResult:
     answer: str
     citations: list[Citation]
     verified: bool
+    notes: tuple[CitedNote, ...] = ()  # the cited transactions' notes, from the ledger (question about a purpose)
     # For metrics (step 7c); not part of the HTTP response.
     category: str = ""
     chat_calls: int = 0
@@ -53,6 +56,22 @@ class Assistant:
         self._now = now_fn
         # Injectable so the eval can time the tools; always the same read-only tools.
         self._ledger = ledger or LedgerTools(pool)
+
+    def _cited_notes(
+        self, ctx: ClientContext, question: str, verified: bool, citations: list[Citation]
+    ) -> tuple[CitedNote, ...]:
+        """For a verified answer about what a transaction was for: each cited transaction's note, in full."""
+        if not verified or not asks_about_notes(question):
+            return ()
+        ids: list[UUID] = []
+        for c in citations:
+            if c.type == "transaction":
+                try:
+                    ids.append(UUID(c.id))
+                except ValueError:
+                    continue
+        notes = self._ledger.notes_of(ctx, ids)
+        return tuple(CitedNote(transaction_id=i, text=notes[i]) for i in dict.fromkeys(ids) if i in notes)
 
     def ask(self, ctx: ClientContext, question: str, trace: RunnableConfig | None = None) -> AskResult:
         # 1. The cap, BEFORE any model call: a client over the limit costs nothing upstream.
@@ -103,6 +122,7 @@ class Assistant:
             answer=outcome.answer,
             citations=outcome.citations,
             verified=outcome.verified,
+            notes=self._cited_notes(ctx, question, outcome.verified, outcome.citations),
             category=outcome.category,
             chat_calls=outcome.usage.chat_calls,
             embed_calls=outcome.usage.embed_calls,

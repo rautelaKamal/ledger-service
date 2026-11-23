@@ -275,6 +275,17 @@ class LedgerTools:
             transactions=rows[:limit],
         )
 
+    def notes_of(self, ctx: ClientContext, transaction_ids: list[UUID]) -> dict[UUID, str]:
+        """The notes of those of the client's transactions that have one, read by code (never by the model)."""
+        if not transaction_ids:
+            return {}
+        with client_scope(self._pool, ctx) as conn:
+            rows = conn.execute(
+                "SELECT id, note FROM agent_transactions WHERE id = ANY(%s) AND note IS NOT NULL",
+                (transaction_ids,),
+            ).fetchall()
+        return {r["id"]: r["note"] for r in rows}
+
     def list_topups(self, ctx: ClientContext, from_: datetime, to: datetime) -> list[TopupItem]:
         """Every top-up onto any of the client's accounts in [from_, to), newest first, whatever its status."""
         with client_scope(self._pool, ctx) as conn:
