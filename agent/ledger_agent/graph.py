@@ -36,6 +36,7 @@ from .prompts import (
     REFUSAL_TEXT,
     classify_instructions,
     feedback_block,
+    new_boundary,
     system_prompt,
     wrap_policy,
     wrap_tool_result,
@@ -119,6 +120,7 @@ class RunContext:
 
     fetched: Fetched = field(default_factory=Fetched)
     usage: Usage = field(default_factory=Usage)
+    boundary: str = field(default_factory=new_boundary)  # this request's data-block tag (prompts.new_boundary)
 
 
 @dataclass(frozen=True)
@@ -324,14 +326,14 @@ def _prefetch_accounts(deps: Deps, run: RunContext, compact: bool) -> str:
     }
     run.fetched.absorb(payload)
     run.fetched.calls.append(ToolCallRecord(name="list_my_accounts", args={"prefetched": True}, ok=True))
-    return wrap_tool_result("list_my_accounts", json.dumps(payload, indent=None if compact else 1))
+    return wrap_tool_result(run.boundary, "list_my_accounts", json.dumps(payload, indent=None if compact else 1))
 
 
 def build_graph(deps: Deps, run: RunContext) -> Any:
     features = deps.features
     answer_tool = ANSWER_TOOL in features
     compact = COMPACT in features
-    system = SystemMessage(system_prompt(deps.now, features))
+    system = SystemMessage(system_prompt(deps.now, run.boundary, features))
 
     def classify(state: State) -> State:
         parsed = _structured(
@@ -350,7 +352,10 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
         first: list[str] = [*context]
         if answer_tool and state.get("retrieved"):
             # 'both' with answer_tool: the policies were retrieved first, so the answer can be submitted here.
-            first += [wrap_policy(c.id, c.source_file, c.heading, c.content) for c in state.get("retrieved") or []]
+            first += [
+                wrap_policy(run.boundary, c.id, c.source_file, c.heading, c.content)
+                for c in state.get("retrieved") or []
+            ]
         first.append(state["question"])
         messages: list[BaseMessage] = [system, HumanMessage("\n\n".join(first))]
         calls = 0
@@ -380,7 +385,8 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
                 else:
                     calls += 1
                     content = _run_tool(by_name[name], args, run.fetched)
-                messages.append(ToolMessage(content=wrap_tool_result(name, content), tool_call_id=call_id))
+                block = wrap_tool_result(run.boundary, name, content)
+                messages.append(ToolMessage(content=block, tool_call_id=call_id))
             if calls >= deps.max_tool_calls and not answer_tool:
                 break
         out: State = {"transcript": messages[2:], "context": context}
@@ -414,7 +420,7 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
             if isinstance(message, ToolMessage):
                 parts.append(str(message.content))
         for chunk in state.get("retrieved") or []:
-            parts.append(wrap_policy(chunk.id, chunk.source_file, chunk.heading, chunk.content))
+            parts.append(wrap_policy(run.boundary, chunk.id, chunk.source_file, chunk.heading, chunk.content))
         parts.append(f"Question: {state['question']}")
         draft = cast(Answer, _structured(deps, run, Answer, [system, HumanMessage("\n\n".join(parts))]))
         return {"draft": draft, "attempts": (state.get("attempts") or 0) + 1}
