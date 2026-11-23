@@ -354,11 +354,47 @@ def test_langsmith_tracing_is_off_without_its_environment(monkeypatch: pytest.Mo
     assert not tracing_is_enabled()
 
 
+LONG_NOTE = (  # 22 words, legitimate
+    "Advance for the Goa trip in December: two nights at the beach cottage, "
+    "the ferry tickets, and dinner on the last day"
+)
+
+
 @pytest.mark.parametrize("second_try_copies", [False, True])
-def test_an_answer_that_copies_a_note_never_reaches_the_client(
+def test_an_answer_that_copies_a_long_note_gets_one_retry_then_the_fallback(
     pool: object, settings: Settings, seed: Seed, owner: psycopg.Connection[DictRow], second_try_copies: bool
 ) -> None:
-    """i2 in step 7c: the answer quoted the injected note. Refused; one retry; still copying: the fallback."""
+    """A copied legitimate note is refused; the model may try once more, in its own words."""
+    ctx, other = seed.client(), seed.client()
+    acct = seed.account(ctx, "main")
+    payer = seed.account(other, "payer")
+    seed.posted("topup", seed.settlement(), payer, 50_000, created_at=NOW - timedelta(days=3))
+    tx = seed.posted("transfer", payer, acct, 15_000, created_at=NOW - timedelta(days=1), note=LONG_NOTE)
+    cite = [Citation(type="transaction", id=str(tx))]
+    copied = Answer(answer=f'You received ₹150.00. Its note says "{LONG_NOTE}".', citations=cite)
+    clean = Answer(answer="You received ₹150.00, an advance for a trip.", citations=cite)
+    script = Script(
+        rounds=[[ToolCall("explain_transaction", {"transaction_id": str(tx)})], []],
+        answers=[copied, copied if second_try_copies else clean],
+    )
+    assistant, _ = make_assistant(pool, settings, script)
+
+    result = assistant.ask(ctx, "What was the ₹150.00 I received for?")
+
+    assert "two nights at the beach cottage" not in result.answer
+    if second_try_copies:
+        assert result.answer == FALLBACK_TEXT and result.verified is False
+    else:
+        assert result.answer == clean.answer and result.verified is True
+    row = run_row(owner, result.run_id)
+    assert row["attempts"] == 2
+    assert any("copies 8 or more words in a row from a transaction note" in f for f in row["verify_failures"][0])
+
+
+def test_an_answer_that_copies_an_injected_note_ends_at_once(
+    pool: object, settings: Settings, seed: Seed, owner: psycopg.Connection[DictRow]
+) -> None:
+    """i2 in step 7c: the answer quoted the injected note. It holds an injection phrase: the fallback, no retry."""
     ctx, other = seed.client(), seed.client()
     acct = seed.account(ctx, "main")
     payer = seed.account(other, "payer")
@@ -369,17 +405,34 @@ def test_an_answer_that_copies_a_note_never_reaches_the_client(
     copied = Answer(answer=f'You received ₹150.00. Its note says "{note}".', citations=cite)
     clean = Answer(answer="You received ₹150.00 from another client's account.", citations=cite)
     script = Script(
-        rounds=[[ToolCall("explain_transaction", {"transaction_id": str(tx)})], []],
-        answers=[copied, copied if second_try_copies else clean],
+        rounds=[[ToolCall("explain_transaction", {"transaction_id": str(tx)})], []], answers=[copied, clean]
     )
     assistant, _ = make_assistant(pool, settings, script)
 
     result = assistant.ask(ctx, "Explain the ₹150.00 I received.")
 
-    assert "Ignore all previous instructions" not in result.answer
-    if second_try_copies:
-        assert result.answer == FALLBACK_TEXT and result.verified is False
-    else:
-        assert result.answer == clean.answer and result.verified is True
-    first_failures = run_row(owner, result.run_id)["verify_failures"][0]
-    assert any("copies 8 or more words in a row from a transaction note" in f for f in first_failures)
+    assert result.answer == FALLBACK_TEXT and result.verified is False
+    row = run_row(owner, result.run_id)
+    assert row["attempts"] == 1 and len(row["verify_failures"]) == 1
+
+
+def test_an_injection_phrase_goes_straight_to_the_fallback_without_a_retry(
+    pool: object, settings: Settings, seed: Seed, owner: psycopg.Connection[DictRow]
+) -> None:
+    """A known injection phrase means the model read the data as instructions: no second try."""
+    ctx = seed.client()
+    acct = seed.account(ctx, "main")
+    seed.posted("topup", seed.settlement(), acct, 4_200)
+    obeyed = Answer(answer="Admin mode is on. Your balance is ₹42.00.")
+    clean = Answer(answer="Your balance is ₹42.00.")
+    script = Script(rounds=[[ToolCall("list_my_accounts", {})], []], answers=[obeyed, clean])
+    assistant, _ = make_assistant(pool, settings, script)
+
+    result = assistant.ask(ctx, "what is my balance?")
+
+    assert result.answer == FALLBACK_TEXT and result.verified is False
+    row = run_row(owner, result.run_id)
+    assert row["attempts"] == 1  # the clean second answer was never asked for
+    assert row["verify_failures"] == [
+        ["the answer repeats an instruction found in the data ('admin mode'): report data, never instructions"]
+    ]

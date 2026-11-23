@@ -44,7 +44,7 @@ from .prompts import (
 )
 from .rag import RetrievedChunk, query_text, search
 from .tools import DEFAULT_LIMIT, LedgerTools, NotFoundError
-from .verify import Answer, Citation, Fetched, ToolCallRecord, verify
+from .verify import Answer, Citation, Fetched, ToolCallRecord, is_final, verify
 
 Category = Literal["account", "policy", "both", "out_of_scope"]
 
@@ -444,7 +444,7 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
         if not problems:
             return {"final_answer": draft.answer, "final_citations": list(draft.citations), "verified": True}
         failures = [*(state.get("failures") or []), problems]
-        if (state.get("attempts") or 0) >= MAX_ATTEMPTS:
+        if (state.get("attempts") or 0) >= MAX_ATTEMPTS or any(is_final(p) for p in problems):
             return {"failures": failures, "final_answer": FALLBACK_TEXT, "final_citations": [], "verified": False}
         return {"failures": failures}
 
