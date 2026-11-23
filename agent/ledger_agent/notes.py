@@ -31,6 +31,24 @@ _ASKS = re.compile(
 )
 
 
+COPY_LIMIT = 8  # this many words of a note in a row, in an answer, is a copy
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"\w+", text.lower())
+
+
+def copies_a_note(answer: str, notes: set[str], limit: int = COPY_LIMIT) -> bool:
+    """Whether the answer holds `limit` or more consecutive words of any note (case and punctuation ignored)."""
+    words = _words(answer)
+    runs = {tuple(words[i : i + limit]) for i in range(len(words) - limit + 1)}
+    for note in notes:
+        n = _words(note)
+        if any(tuple(n[i : i + limit]) in runs for i in range(len(n) - limit + 1)):
+            return True
+    return False
+
+
 def asks_about_notes(question: str) -> bool:
     """Whether the question asks what a transaction was for, or about its note."""
     return bool(_ASKS.search(question))
