@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { fromAgentBody } from '../lib/agent-answer';
 import { become, expectAccessible, optionStartingWith, paiseOf, totalBalance } from './helpers';
 
 test.describe.configure({ mode: 'serial' });
@@ -712,5 +713,35 @@ test('24. on each slip "Continue as …" reads as the main action: larger than t
     expect(style.line, name).toContain('underline');
     expect([style.border, style.bg], name).toEqual(['0px', 'rgba(0, 0, 0, 0)']); // a link, not a button
   }
+  await expectAccessible(page);
+});
+
+test('25. a cited transaction\'s note is shown in full, as quoted user text, escaped; the answer does not repeat it', async ({ page }) => {
+  // A legitimate 20-word note, with markup in it that must stay text.
+  const note = 'Deposit for the two bedroom flat on <b>Park</b> Street with the first month of rent and the keys handed over';
+  expect(note.split(' ')).toHaveLength(20);
+  const tx = '11111111-2222-4333-8444-555555555555';
+  // What the agent returns for "What was my ₹9,000.00 transfer for?": its own few words, the citation, and
+  // the note read from the ledger by code. fromAgentBody is what the web server does with it.
+  const shown = fromAgentBody({
+    answer: 'That ₹9,000.00 was the deposit for a flat.',
+    verified: true,
+    citations: [{ type: 'transaction', id: tx.toUpperCase() }],
+    notes: [{ transaction_id: tx, text: note }],
+  });
+  expect(shown.citations[0]?.quote).toBe(note);
+  expect(shown.answer).not.toContain('two bedroom flat on');
+
+  await become(page, 'Meera Iyer');
+  await page.goto('/assistant');
+  await page.route('**/api/ask', (route) => route.fulfill({ json: shown }));
+  await page.getByLabel('Ask about your money').fill('What was my ₹9,000.00 transfer for?');
+  await page.getByRole('button', { name: 'Ask', exact: true }).click();
+  const turn = page.getByRole('listitem').filter({ hasText: 'What was my ₹9,000.00 transfer for?' });
+  const quote = turn.locator('blockquote');
+  await expect(quote).toHaveText(note); // in full, character for character
+  await expect(quote.locator('b')).toHaveCount(0); // the <b> stayed text
+  await expect(turn.getByText('Note, as it was typed')).toBeVisible();
+  await expect(turn.getByText('That ₹9,000.00 was the deposit for a flat.')).toBeVisible();
   await expectAccessible(page);
 });

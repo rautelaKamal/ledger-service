@@ -3,6 +3,7 @@ import { dayLabel } from '@/lib/dates';
 import { formatPaise, sumPaise } from '@/lib/money';
 import { PERSONAS, type Persona } from '@/lib/personas';
 import type { Account, PassbookRow } from '@/lib/types';
+import { fromAgentBody, type AgentBody } from '@/lib/agent-answer';
 import { env } from './env';
 import { clientIdOf } from './identity';
 import { getAccounts, getPassbook, UpstreamError } from './ledger';
@@ -13,6 +14,8 @@ export interface Citation {
   kind: 'account' | 'transaction' | 'policy';
   title: string;
   lines: string[];
+  /** A cited transaction's note, from the ledger: shown in full as quoted user text, never as markup. */
+  quote?: string;
 }
 
 export interface AssistantAnswer {
@@ -196,16 +199,9 @@ async function viaAgent(persona: Persona, question: string): Promise<AssistantAn
     cache: 'no-store',
     signal: AbortSignal.timeout(60_000),
   });
-  const body = (await res.json().catch(() => null)) as { answer?: string; verified?: boolean; citations?: Array<{ type: string; id: string }> } | null;
+  const body = (await res.json().catch(() => null)) as Partial<AgentBody> | null;
   if (!res.ok || !body?.answer) throw new UpstreamError(res.status, body, 'assistant');
-  const citations: Citation[] = (body.citations ?? []).map((c, i) => ({
-    n: i + 1,
-    kind: c.type === 'policy' ? 'policy' : 'transaction',
-    title: c.type === 'policy' ? `Policy section ${c.id}` : `Transaction ${c.id.slice(0, 8)}…`,
-    lines: [`id ${c.id}`],
-  }));
-  const markers = citations.map((c) => `[${c.n}]`).join(' ');
-  return { mode: 'agent', answer: markers ? `${body.answer} ${markers}` : body.answer, verified: body.verified ?? false, citations, steps: null };
+  return fromAgentBody({ ...body, answer: body.answer });
 }
 
 export function ask(persona: Persona, question: string): Promise<AssistantAnswer> {
