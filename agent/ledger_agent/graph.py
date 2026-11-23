@@ -30,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from .dates import period_bounds
 from .db import ClientContext, client_scope
 from .llm import UpstreamModelError
+from .notes import asks_about_notes
 from .prompts import (
     ANSWER_INSTRUCTIONS,
     FALLBACK_TEXT,
@@ -172,6 +173,7 @@ def make_tools(
     now: datetime,
     compact: bool = False,
     topups: bool = False,
+    include_notes: bool = False,
 ) -> list[BaseTool]:
     """LangChain tools whose only arguments are the ones in the schemas above.
 
@@ -196,7 +198,8 @@ def make_tools(
 
     def list_transactions(account_id: UUID, from_date: str | None = None, to_date: str | None = None) -> str:
         start, end = period_bounds(from_date, to_date, now)
-        return dump(ledger.list_transactions(ctx, account_id, start, end, limit=20 if compact else DEFAULT_LIMIT))
+        limit = 20 if compact else DEFAULT_LIMIT
+        return dump(ledger.list_transactions(ctx, account_id, start, end, limit=limit, include_notes=include_notes))
 
     def list_my_topups(from_date: str | None = None, to_date: str | None = None) -> str:
         start, end = period_bounds(from_date, to_date, now)
@@ -206,7 +209,7 @@ def make_tools(
         return json.dumps([json.loads(t.model_dump_json()) for t in items], indent=indent)
 
     def explain_transaction(transaction_id: UUID) -> str:
-        return dump(ledger.explain_transaction(ctx, transaction_id))
+        return dump(ledger.explain_transaction(ctx, transaction_id, include_notes=include_notes))
 
     tools: list[BaseTool] = [
         StructuredTool.from_function(
@@ -345,7 +348,15 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
         return {"category": cast(Classification, parsed).category}
 
     def fetch(state: State) -> State:
-        tools = make_tools(deps.ledger, deps.ctx, run.fetched, deps.now, compact=compact, topups=TOPUPS in features)
+        tools = make_tools(
+            deps.ledger,
+            deps.ctx,
+            run.fetched,
+            deps.now,
+            compact=compact,
+            topups=TOPUPS in features,
+            include_notes=asks_about_notes(state["question"]),
+        )
         by_name = {t.name: t for t in tools}
         bound = deps.chat.bind_tools([*tools, _submit_answer_tool()] if answer_tool else tools)
         context = [_prefetch_accounts(deps, run, compact)] if PREFETCH in features else []
