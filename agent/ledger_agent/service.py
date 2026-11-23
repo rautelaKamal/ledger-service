@@ -8,6 +8,7 @@ from time import perf_counter
 import psycopg
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import RunnableConfig
 from psycopg.rows import DictRow
 from psycopg_pool import ConnectionPool
 
@@ -26,6 +27,13 @@ class AskResult:
     answer: str
     citations: list[Citation]
     verified: bool
+    # For metrics (step 7c); not part of the HTTP response.
+    category: str = ""
+    chat_calls: int = 0
+    embed_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    tools: tuple[tuple[str, bool], ...] = ()
 
 
 class Assistant:
@@ -36,15 +44,17 @@ class Assistant:
         chat: BaseChatModel,
         embeddings: Embeddings,
         now_fn: Callable[[], datetime] = now_utc,
+        ledger: LedgerTools | None = None,
     ) -> None:
         self._pool = pool
         self._settings = settings
         self._chat = chat
         self._embeddings = embeddings
         self._now = now_fn
-        self._ledger = LedgerTools(pool)
+        # Injectable so the eval can time the tools; always the same read-only tools.
+        self._ledger = ledger or LedgerTools(pool)
 
-    def ask(self, ctx: ClientContext, question: str) -> AskResult:
+    def ask(self, ctx: ClientContext, question: str, trace: RunnableConfig | None = None) -> AskResult:
         # 1. The cap, BEFORE any model call: a client over the limit costs nothing upstream.
         with client_scope(self._pool, ctx) as conn:
             asked = questions_in_window(conn)
@@ -62,8 +72,10 @@ class Assistant:
                 pool=self._pool,
                 ctx=ctx,
                 now=self._now(),
+                features=self._settings.features,
             ),
             question,
+            trace,
         )
         latency_ms = int((perf_counter() - started) * 1000)
 
@@ -86,4 +98,15 @@ class Assistant:
         )
         with client_scope(self._pool, ctx, read_only=False) as conn:
             run_id = insert_run(conn, ctx.client_id, record)
-        return AskResult(run_id=run_id, answer=outcome.answer, citations=outcome.citations, verified=outcome.verified)
+        return AskResult(
+            run_id=run_id,
+            answer=outcome.answer,
+            citations=outcome.citations,
+            verified=outcome.verified,
+            category=outcome.category,
+            chat_calls=outcome.usage.chat_calls,
+            embed_calls=outcome.usage.embed_calls,
+            prompt_tokens=outcome.usage.prompt_tokens,
+            completion_tokens=outcome.usage.completion_tokens,
+            tools=tuple((c.name, c.ok) for c in outcome.tools_called),
+        )

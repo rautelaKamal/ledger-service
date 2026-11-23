@@ -34,6 +34,9 @@ resources:
   - observability/prometheus.yaml
   - observability/grafana.yaml
   - networkpolicy.yaml
+  - agent/deployment.yaml
+  - agent/service.yaml
+  - agent/networkpolicy.yaml
   - web/deployment.yaml
   - web/service.yaml
   - web/networkpolicy.yaml

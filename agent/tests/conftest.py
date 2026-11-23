@@ -14,6 +14,7 @@ from typing import Any, cast
 
 import psycopg
 import pytest
+from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import DictRow, dict_row
 from psycopg_pool import ConnectionPool
 
@@ -25,13 +26,27 @@ ENV_FILE = Path(__file__).resolve().parents[2] / ".env.test"
 
 
 def _env(name: str) -> str:
+    lines = ENV_FILE.read_text().splitlines() if ENV_FILE.exists() else []
+    found = [ln.split("=", 1)[1].strip() for ln in lines if ln.startswith(f"{name}=")]
     if name in os.environ:
-        return os.environ[name]
-    if ENV_FILE.exists():
-        for line in ENV_FILE.read_text().splitlines():
-            if line.startswith(f"{name}="):
-                return line.split("=", 1)[1].strip()
-    raise RuntimeError(f"{name} is not set (and {ENV_FILE} has no value for it)")
+        value = os.environ[name]
+    elif found:
+        value = found[0]
+    else:
+        raise RuntimeError(f"{name} is not set (and {ENV_FILE} has no value for it)")
+    return require_test_database(name, value) if name.endswith("DATABASE_URL") else value
+
+
+def require_test_database(name: str, url: str) -> str:
+    """These tests write (seed data, policy chunks with FAKE embeddings). They may only
+    ever do that to a database whose name ends in _test: on 18 Nov 2026 a run against
+    the eval's database replaced its real policy embeddings with fake ones."""
+    dbname = conninfo_to_dict(url).get("dbname") or ""
+    if not str(dbname).endswith("_test"):
+        raise RuntimeError(
+            f"{name} points at database {dbname!r}: the agent tests only run against a database named *_test"
+        )
+    return url
 
 
 def clear_langsmith_env_cache() -> None:

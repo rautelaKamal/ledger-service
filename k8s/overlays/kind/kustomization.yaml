@@ -20,6 +20,8 @@ images:
     newTag: local
   - name: ledger-mock-provider
     newTag: local
+  - name: ledger-agent
+    newTag: local
   - name: ledger-web
     newTag: local
 

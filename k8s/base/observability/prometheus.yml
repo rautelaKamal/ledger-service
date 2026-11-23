@@ -25,3 +25,11 @@ scrape_configs:
         type: A
         port: 9101
         refresh_interval: 15s
+
+  # The assistant (step 7c): every agent pod, on its internal metrics port.
+  - job_name: agent
+    dns_sd_configs:
+      - names: ["agent-metrics.ledger.svc.cluster.local"]
+        type: A
+        port: 9102
+        refresh_interval: 15s

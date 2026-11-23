@@ -19,30 +19,40 @@ import psycopg
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.graph import END, START, StateGraph
+from langsmith import traceable
 from psycopg.rows import DictRow
 from psycopg_pool import ConnectionPool
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .dates import period_bounds
 from .db import ClientContext, client_scope
 from .llm import UpstreamModelError
 from .prompts import (
     ANSWER_INSTRUCTIONS,
-    CLASSIFY_INSTRUCTIONS,
     FALLBACK_TEXT,
     REFUSAL_TEXT,
+    classify_instructions,
     feedback_block,
     system_prompt,
     wrap_policy,
     wrap_tool_result,
 )
 from .rag import RetrievedChunk, query_text, search
-from .tools import LedgerTools, NotFoundError
+from .tools import DEFAULT_LIMIT, LedgerTools, NotFoundError
 from .verify import Answer, Citation, Fetched, ToolCallRecord, verify
 
 Category = Literal["account", "policy", "both", "out_of_scope"]
+
+# Step 7c improvements, each switchable so its effect can be measured (eval/):
+PREFETCH = "prefetch"  # the client's accounts (and totals per currency) fetched by code, not by a model round
+ANSWER_TOOL = "answer_tool"  # the model submits its answer as a tool call: no 'done with tools' round, no answer call
+COMPACT = "compact"  # tool output without indentation or empty fields, at most 20 transactions
+TOPUPS = "topups"  # list_my_topups across all accounts, 'cover every item in the period', state every amount
+CLASSIFY = "classify"  # two hints for the classifier: transfers naming the other party; 'can I ...?' is both
+FEATURES = (PREFETCH, ANSWER_TOOL, COMPACT, TOPUPS, CLASSIFY)
 MAX_TOOL_CALLS = 4
 MAX_ATTEMPTS = 2
 
@@ -75,6 +85,14 @@ class PeriodArgs(BaseModel):
     to_date: str | None = Field(default=None, description="Last day, YYYY-MM-DD (IST), inclusive. Default: today")
 
 
+class TopupPeriodArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    from_date: str | None = Field(
+        default=None, description="First day, YYYY-MM-DD (IST), inclusive. Default: 30 days ago"
+    )
+    to_date: str | None = Field(default=None, description="Last day, YYYY-MM-DD (IST), inclusive. Default: today")
+
+
 class TransactionArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     transaction_id: UUID = Field(description="A transaction id from list_transactions")
@@ -84,8 +102,12 @@ class TransactionArgs(BaseModel):
 class Usage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    chat_calls: int = 0
+    embed_calls: int = 0
 
     def add(self, message: Any) -> None:
+        """One chat-model response: one call, and its tokens."""
+        self.chat_calls += 1
         meta = getattr(message, "usage_metadata", None) or {}
         self.prompt_tokens += int(meta.get("input_tokens", 0) or 0)
         self.completion_tokens += int(meta.get("output_tokens", 0) or 0)
@@ -108,12 +130,14 @@ class Deps:
     ctx: ClientContext
     now: datetime
     max_tool_calls: int = MAX_TOOL_CALLS
+    features: frozenset[str] = frozenset()
 
 
 class State(TypedDict, total=False):
     question: str
     category: Category
     transcript: list[BaseMessage]
+    context: list[str]  # data blocks the server added itself (prefetched accounts)
     retrieved: list[RetrievedChunk]
     draft: Answer | None
     failures: list[list[str]]
@@ -139,34 +163,50 @@ class Outcome:
 # ───────────── tools over LedgerTools, closed over the request's ClientContext ─────────────
 
 
-def make_tools(ledger: LedgerTools, ctx: ClientContext, fetched: Fetched, now: datetime) -> list[BaseTool]:
+def make_tools(
+    ledger: LedgerTools,
+    ctx: ClientContext,
+    fetched: Fetched,
+    now: datetime,
+    compact: bool = False,
+    topups: bool = False,
+) -> list[BaseTool]:
     """LangChain tools whose only arguments are the ones in the schemas above.
 
     `ctx` is captured here, server-side. It is not a parameter, not in any
     schema the model sees, and cannot be supplied by a tool call.
     """
 
+    indent = None if compact else 1
+
     def dump(payload: BaseModel) -> str:
         fetched.absorb(payload)
-        return payload.model_dump_json(indent=1)
+        return payload.model_dump_json(indent=indent, exclude_none=compact)
 
     def list_my_accounts() -> str:
         accounts = ledger.list_accounts(ctx)
         for a in accounts:
             fetched.absorb(a)
-        return json.dumps([json.loads(a.model_dump_json()) for a in accounts], indent=1)
+        return json.dumps([json.loads(a.model_dump_json()) for a in accounts], indent=indent)
 
     def get_balance(account_id: UUID) -> str:
         return dump(ledger.get_balance(ctx, account_id))
 
     def list_transactions(account_id: UUID, from_date: str | None = None, to_date: str | None = None) -> str:
         start, end = period_bounds(from_date, to_date, now)
-        return dump(ledger.list_transactions(ctx, account_id, start, end))
+        return dump(ledger.list_transactions(ctx, account_id, start, end, limit=20 if compact else DEFAULT_LIMIT))
+
+    def list_my_topups(from_date: str | None = None, to_date: str | None = None) -> str:
+        start, end = period_bounds(from_date, to_date, now)
+        items = ledger.list_topups(ctx, start, end)
+        for t in items:
+            fetched.absorb(t)
+        return json.dumps([json.loads(t.model_dump_json()) for t in items], indent=indent)
 
     def explain_transaction(transaction_id: UUID) -> str:
         return dump(ledger.explain_transaction(ctx, transaction_id))
 
-    return [
+    tools: list[BaseTool] = [
         StructuredTool.from_function(
             func=list_my_accounts,
             name="list_my_accounts",
@@ -197,6 +237,19 @@ def make_tools(ledger: LedgerTools, ctx: ClientContext, fetched: Fetched, now: d
             args_schema=TransactionArgs,
         ),
     ]
+    if topups:
+        tools.append(
+            StructuredTool.from_function(
+                func=list_my_topups,
+                name="list_my_topups",
+                description=(
+                    "Every top-up onto any of the caller's accounts in a period (IST calendar dates), newest first, "
+                    "with its status: posted (credited), pending (waiting for the provider) or failed (never credited)."
+                ),
+                args_schema=TopupPeriodArgs,
+            )
+        )
+    return tools
 
 
 def _invoke_model(call: Callable[[], Any]) -> Any:
@@ -239,26 +292,82 @@ def _run_tool(tool: BaseTool, args: dict[str, Any], fetched: Fetched) -> str:
 # ───────────── the graph ─────────────
 
 
+SUBMIT_ANSWER = "submit_answer"
+
+
+def _submit_answer_tool() -> BaseTool:
+    """The model hands over its final answer as a tool call (feature answer_tool). Never executed: intercepted."""
+
+    def submit_answer(answer: str, citations: list[Citation] | None = None) -> str:  # pragma: no cover
+        return "received"
+
+    return StructuredTool.from_function(
+        func=submit_answer,
+        name=SUBMIT_ANSWER,
+        description=(
+            "Submit your final answer to the caller, with citations: the transaction ids and policy chunk ids "
+            "you relied on. Call this once you have the data; do not reply with plain text."
+        ),
+        args_schema=Answer,
+    )
+
+
+def _prefetch_accounts(deps: Deps, run: RunContext, compact: bool) -> str:
+    """The client's accounts and, per currency, the total: fetched by code, so no model round is spent on it."""
+    accounts = deps.ledger.list_accounts(deps.ctx)
+    totals: dict[str, int] = {}
+    for a in accounts:
+        totals[a.currency] = totals.get(a.currency, 0) + a.balance_paise
+    payload = {
+        "accounts": [json.loads(a.model_dump_json()) for a in accounts],
+        "totals": [{"currency": c, "total_balance_paise": t} for c, t in sorted(totals.items())],
+    }
+    run.fetched.absorb(payload)
+    run.fetched.calls.append(ToolCallRecord(name="list_my_accounts", args={"prefetched": True}, ok=True))
+    return wrap_tool_result("list_my_accounts", json.dumps(payload, indent=None if compact else 1))
+
+
 def build_graph(deps: Deps, run: RunContext) -> Any:
-    system = SystemMessage(system_prompt(deps.now))
+    features = deps.features
+    answer_tool = ANSWER_TOOL in features
+    compact = COMPACT in features
+    system = SystemMessage(system_prompt(deps.now, features))
 
     def classify(state: State) -> State:
         parsed = _structured(
-            deps, run, Classification, [system, HumanMessage(f"{CLASSIFY_INSTRUCTIONS}\nQuestion: {state['question']}")]
+            deps,
+            run,
+            Classification,
+            [system, HumanMessage(f"{classify_instructions(features)}\nQuestion: {state['question']}")],
         )
         return {"category": cast(Classification, parsed).category}
 
     def fetch(state: State) -> State:
-        tools = make_tools(deps.ledger, deps.ctx, run.fetched, deps.now)
+        tools = make_tools(deps.ledger, deps.ctx, run.fetched, deps.now, compact=compact, topups=TOPUPS in features)
         by_name = {t.name: t for t in tools}
-        bound = deps.chat.bind_tools(tools)
-        messages: list[BaseMessage] = [system, HumanMessage(state["question"])]
+        bound = deps.chat.bind_tools([*tools, _submit_answer_tool()] if answer_tool else tools)
+        context = [_prefetch_accounts(deps, run, compact)] if PREFETCH in features else []
+        first: list[str] = [*context]
+        if answer_tool and state.get("retrieved"):
+            # 'both' with answer_tool: the policies were retrieved first, so the answer can be submitted here.
+            first += [wrap_policy(c.id, c.source_file, c.heading, c.content) for c in state.get("retrieved") or []]
+        first.append(state["question"])
+        messages: list[BaseMessage] = [system, HumanMessage("\n\n".join(first))]
         calls = 0
-        for _round in range(deps.max_tool_calls):
+        draft: Answer | None = None
+        # With answer_tool, one extra round: the model may need it to submit after its last tool.
+        for _round in range(deps.max_tool_calls + (1 if answer_tool else 0)):
             ai = cast(AIMessage, _invoke_model(lambda: bound.invoke(messages)))
             run.usage.add(ai)
             messages.append(ai)
             if not ai.tool_calls:
+                break
+            submitted = [tc for tc in ai.tool_calls if tc["name"] == SUBMIT_ANSWER]
+            if answer_tool and submitted:
+                try:
+                    draft = Answer.model_validate(submitted[0]["args"])
+                except ValidationError:
+                    draft = None  # malformed: the answer step will write it instead
                 break
             for tc in ai.tool_calls:
                 name = tc["name"]
@@ -272,21 +381,35 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
                     calls += 1
                     content = _run_tool(by_name[name], args, run.fetched)
                 messages.append(ToolMessage(content=wrap_tool_result(name, content), tool_call_id=call_id))
-            if calls >= deps.max_tool_calls:
+            if calls >= deps.max_tool_calls and not answer_tool:
                 break
-        return {"transcript": messages[2:]}
+        out: State = {"transcript": messages[2:], "context": context}
+        if draft is not None:
+            out["draft"] = draft
+            out["attempts"] = (state.get("attempts") or 0) + 1
+        return out
+
+    # Traced as their own spans (no-ops when tracing is off), so a trace shows
+    # where retrieval time goes: the embedding API call vs the vector search.
+    @traceable(run_type="embedding", name="embed_question")
+    def embed_question(question: str) -> list[float]:
+        run.usage.embed_calls += 1
+        return cast(list[float], _invoke_model(lambda: deps.embeddings.embed_query(query_text(question))))
+
+    @traceable(run_type="retriever", name="policy_search")
+    def policy_search(vector: list[float]) -> list[RetrievedChunk]:
+        with client_scope(deps.pool, deps.ctx) as conn:
+            return search(conn, vector)
 
     def retrieve(state: State) -> State:
-        vector = _invoke_model(lambda: deps.embeddings.embed_query(query_text(state["question"])))
-        with client_scope(deps.pool, deps.ctx) as conn:
-            chunks = search(conn, vector)
-        return {"retrieved": chunks}
+        return {"retrieved": policy_search(embed_question(state["question"]))}
 
     def answer(state: State) -> State:
         parts: list[str] = [ANSWER_INSTRUCTIONS]
         failures = state.get("failures") or []
         if failures:
             parts.append(feedback_block(failures[-1]))
+        parts += state.get("context") or []
         for message in state.get("transcript") or []:
             if isinstance(message, ToolMessage):
                 parts.append(str(message.content))
@@ -312,10 +435,19 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
         return {"final_answer": REFUSAL_TEXT, "final_citations": [], "verified": True, "attempts": 0}
 
     def after_classify(state: State) -> str:
-        return {"account": "fetch", "both": "fetch", "policy": "retrieve", "out_of_scope": "refuse"}[state["category"]]
+        # With answer_tool, 'both' retrieves first so fetch can submit the answer with the policies in view.
+        both = "retrieve" if answer_tool else "fetch"
+        return {"account": "fetch", "both": both, "policy": "retrieve", "out_of_scope": "refuse"}[state["category"]]
+
+    def after_retrieve(state: State) -> str:
+        return "fetch" if answer_tool and state["category"] == "both" else "answer"
 
     def after_fetch(state: State) -> str:
-        return "retrieve" if state["category"] == "both" else "answer"
+        if state.get("draft") is not None:
+            return "check"  # submitted through submit_answer: no separate answer call
+        if state["category"] == "both" and not answer_tool:
+            return "retrieve"
+        return "answer"
 
     def after_check(state: State) -> str:
         return END if "final_answer" in state else "answer"
@@ -332,17 +464,19 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
     graph.add_conditional_edges(
         "classify", after_classify, {"fetch": "fetch", "retrieve": "retrieve", "refuse": "refuse"}
     )
-    graph.add_conditional_edges("fetch", after_fetch, {"retrieve": "retrieve", "answer": "answer"})
-    graph.add_edge("retrieve", "answer")
+    graph.add_conditional_edges("fetch", after_fetch, {"retrieve": "retrieve", "answer": "answer", "check": "check"})
+    graph.add_conditional_edges("retrieve", after_retrieve, {"fetch": "fetch", "answer": "answer"})
     graph.add_edge("answer", "check")
     graph.add_conditional_edges("check", after_check, {END: END, "answer": "answer"})
     graph.add_edge("refuse", END)
     return graph.compile()
 
 
-def run_question(deps: Deps, question: str) -> Outcome:
+def run_question(deps: Deps, question: str, config: RunnableConfig | None = None) -> Outcome:
+    """config: run name, tags and metadata for the trace (the eval tags each item); never affects behaviour."""
     run = RunContext()
-    final = cast(State, build_graph(deps, run).invoke({"question": question, "attempts": 0, "failures": []}))
+    initial: State = {"question": question, "attempts": 0, "failures": []}
+    final = cast(State, build_graph(deps, run).invoke(initial, config=config))
     return Outcome(
         answer=final["final_answer"],
         citations=list(final.get("final_citations") or []),

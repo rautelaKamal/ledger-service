@@ -120,3 +120,39 @@ def test_agent_cannot_insert_a_run_for_another_client(pool: object, seed: Seed) 
             " VALUES (%s, 'q', 'account', 'a', true, 1, 'fake', 1)",
             (me.client_id,),
         )
+
+
+def test_metrics_count_outcomes_calls_and_tokens_without_client_data(
+    settings: Settings, seed: Seed, owner: psycopg.Connection[DictRow]
+) -> None:
+    from prometheus_client import generate_latest
+
+    ctx = seed.client()
+    acct = seed.account(ctx, "main")
+    seed.posted("topup", seed.settlement(), acct, 4_200)
+    limited = Settings(database_url=settings.database_url, pool_size=2, daily_limit=2)
+    client, chat = client_for(
+        limited,
+        Script(rounds=[[ToolCall("list_my_accounts", {})], []], answers=[Answer(answer="Your balance is ₹42.00.")]),
+    )
+    with client:
+        headers = {"X-Client-Id": ctx.client_id}
+        assert client.post("/ask", json={"question": "balance?"}, headers=headers).status_code == 200
+        chat.script.category = "out_of_scope"
+        assert client.post("/ask", json={"question": "weather?"}, headers=headers).status_code == 200
+        assert client.post("/ask", json={"question": "third"}, headers=headers).status_code == 429
+        assert client.post("/ask", json={"question": "no header"}).status_code == 400
+        text = generate_latest(client.app.state.metrics.registry).decode()  # type: ignore[attr-defined]
+
+    def value(series: str) -> float:
+        line = next(line for line in text.splitlines() if line.startswith(series + " "))
+        return float(line.split()[-1])
+
+    assert value('agent_questions_total{category="account",outcome="verified"}') == 1
+    assert value('agent_questions_total{category="out_of_scope",outcome="refused"}') == 1
+    assert value('agent_questions_total{category="none",outcome="rate_limited"}') == 1
+    assert value('agent_questions_total{category="none",outcome="bad_request"}') == 1
+    assert value('agent_model_calls_total{kind="chat"}') == 5  # classify + 2 tool rounds + answer, then classify
+    assert value('agent_tool_calls_total{ok="true",tool="list_my_accounts"}') == 1
+    assert value('agent_question_duration_seconds_count{category="account"}') == 1
+    assert ctx.client_id not in text and "balance" not in text.lower()  # no client ids, no questions or answers

@@ -26,6 +26,10 @@ class Settings:
     embedding_dimensions: int = 768
     daily_limit: int = 20
     owner_database_url: str | None = None
+    # Internal /metrics port. 0 = no metrics server (what tests construct).
+    metrics_port: int = 0
+    # Step 7c improvements switched on (graph.FEATURES). Defaults are set by the eval results.
+    features: frozenset[str] = frozenset()
 
 
 def read_env_file(path: Path) -> dict[str, str]:
@@ -94,4 +98,6 @@ def load_settings(env: dict[str, str] | None = None, env_file: Path | None = DEF
         embedding_dimensions=dims,
         daily_limit=daily,
         owner_database_url=e.get("OWNER_DATABASE_URL") or None,
+        metrics_port=int(e.get("AGENT_METRICS_PORT", "9102")),
+        features=frozenset(f.strip() for f in e.get("AGENT_FEATURES", "").split(",") if f.strip()),
     )

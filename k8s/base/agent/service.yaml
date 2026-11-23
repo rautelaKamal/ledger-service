@@ -1,0 +1,32 @@
+# agent          the assistant's API (port 8000), for its one caller (app=web)
+# agent-metrics  internal, headless: Prometheus scrapes each agent pod on 9102
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent
+  labels:
+    app: agent
+spec:
+  type: ClusterIP
+  selector:
+    app: agent
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-metrics
+  labels:
+    app: agent
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: agent
+  ports:
+    - name: metrics
+      port: 9102
+      targetPort: metrics

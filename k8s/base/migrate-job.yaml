@@ -52,11 +52,13 @@ spec:
               # :'var' is psql's safe quoting: a password can hold any character.
               psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d postgres \
                 -v owner="$LEDGER_OWNER_PASSWORD" -v app="$LEDGER_APP_PASSWORD" \
-                -v worker="$LEDGER_WORKER_PASSWORD" -v reconciler="$LEDGER_RECONCILER_PASSWORD" <<'SQL'
+                -v worker="$LEDGER_WORKER_PASSWORD" -v reconciler="$LEDGER_RECONCILER_PASSWORD" \
+                -v agent="$LEDGER_AGENT_PASSWORD" <<'SQL'
               ALTER ROLE ledger_owner      PASSWORD :'owner';
               ALTER ROLE ledger_app        PASSWORD :'app';
               ALTER ROLE ledger_worker     PASSWORD :'worker';
               ALTER ROLE ledger_reconciler PASSWORD :'reconciler';
+              ALTER ROLE ledger_agent      PASSWORD :'agent';
               SQL
               echo "roles ready"
           env:
@@ -70,6 +72,8 @@ spec:
               valueFrom: { secretKeyRef: { name: ledger-secrets, key: LEDGER_WORKER_PASSWORD } }
             - name: LEDGER_RECONCILER_PASSWORD
               valueFrom: { secretKeyRef: { name: ledger-secrets, key: LEDGER_RECONCILER_PASSWORD } }
+            - name: LEDGER_AGENT_PASSWORD
+              valueFrom: { secretKeyRef: { name: ledger-secrets, key: LEDGER_AGENT_PASSWORD } }
           volumeMounts:
             - name: init
               mountPath: /init
