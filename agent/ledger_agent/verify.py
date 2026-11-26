@@ -86,6 +86,9 @@ class Fetched:
     ids: set[str] = field(default_factory=set)
     notes: set[str] = field(default_factory=set)
     calls: list[ToolCallRecord] = field(default_factory=list)
+    # (total_spent_paise, period_text) of every spending result: an answer that states the
+    # total must state that range too, so the answer and the data mean the same dates.
+    spending: list[tuple[int, str]] = field(default_factory=list)
 
     def absorb(self, payload: Any) -> None:
         """Walk a tool result (pydantic models, dicts, lists) for *_paise ints, UUID-looking strings and notes."""
@@ -94,6 +97,8 @@ class Fetched:
         elif isinstance(payload, dict):
             if set(payload) == {"kind", "text"} and isinstance(payload["text"], str):  # a notes.UserNote
                 self.notes.add(payload["text"])
+            if isinstance(payload.get("total_spent_paise"), int) and isinstance(payload.get("period_text"), str):
+                self.spending.append((payload["total_spent_paise"], payload["period_text"]))
             for key, value in payload.items():
                 if (
                     isinstance(key, str)
@@ -138,6 +143,13 @@ def verify(answer: Answer, fetched: Fetched, retrieved_ids: set[int], retrieved_
             failures.append(f"cited transaction {citation.id} was not fetched")
         if citation.type == "policy" and not (citation.id.isdigit() and int(citation.id) in retrieved_ids):
             failures.append(f"cited policy chunk {citation.id} was not retrieved")
+    stated = amounts_in_text(answer.answer)
+    for total, text in fetched.spending:
+        if total in stated and _dashless(text) not in _dashless(answer.answer):
+            failures.append(
+                f"the spending total {format_paise(total)} is for {text}: state that range with it, "
+                f"for example 'From {text} you spent {format_paise(total)}.'"
+            )
     lowered = answer.answer.lower()
     for word in FORBIDDEN_WORDS:
         if re.search(rf"\b{word}\b", lowered):
@@ -176,3 +188,31 @@ def format_paise(paise: int) -> str:
             groups.insert(0, head)
         digits = ",".join([*groups, tail])
     return f"{sign}₹{digits}.{fraction:02d}"
+
+
+def _dashless(text: str) -> str:
+    """A range written with an en dash, an em dash or a hyphen, with or without spaces, compares equal."""
+    return re.sub(r"\s*[-\u2013\u2014]\s*", "-", re.sub(r"\s+", " ", text)).lower()
+
+
+def with_rupees(payload: Any) -> Any:
+    """Next to every *_paise amount, the same amount as code-written rupees (*_inr: "₹1,042.00").
+
+    The model states amounts in rupees; converting paise itself is where it went wrong
+    (step 7g: 104200 paise written as ₹1,04,200.00). It copies these instead.
+    """
+    if isinstance(payload, dict):
+        out: dict[str, Any] = {}
+        for key, value in payload.items():
+            out[key] = with_rupees(value)
+            if (
+                isinstance(key, str)
+                and key.endswith("_paise")
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+            ):
+                out[key[: -len("_paise")] + "_inr"] = format_paise(value)
+        return out
+    if isinstance(payload, list):
+        return [with_rupees(item) for item in payload]
+    return payload

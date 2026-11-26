@@ -12,7 +12,7 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal, TypedDict, cast
 from uuid import UUID
 
@@ -28,7 +28,17 @@ from psycopg.rows import DictRow
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .dates import period_bounds
+from .dates import (
+    NAMED_PERIODS,
+    NamedPeriod,
+    ist_midnight,
+    named_period,
+    parse_ist_date,
+    period_bounds,
+    period_named_in,
+    period_text,
+    today_ist,
+)
 from .db import ClientContext, client_scope
 from .llm import UpstreamModelError, is_quota_error
 from .notes import asks_about_notes
@@ -45,7 +55,7 @@ from .prompts import (
 )
 from .rag import RetrievedChunk, query_text, search
 from .tools import DEFAULT_LIMIT, LedgerTools, NotFoundError
-from .verify import Answer, Citation, Fetched, ToolCallRecord, is_final, verify
+from .verify import Answer, Citation, Fetched, ToolCallRecord, is_final, verify, with_rupees
 
 Category = Literal["account", "policy", "both", "out_of_scope"]
 
@@ -94,6 +104,18 @@ class TopupPeriodArgs(BaseModel):
         default=None, description="First day, YYYY-MM-DD (IST), inclusive. Default: 30 days ago"
     )
     to_date: str | None = Field(default=None, description="Last day, YYYY-MM-DD (IST), inclusive. Default: today")
+
+
+class SpendingArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    period: Literal["yesterday", "this_week", "last_week", "last_7_days", "dates"] = Field(
+        description=(
+            "yesterday; this_week (Monday to today); last_week (the previous Monday to Sunday); last_7_days "
+            "(today and the 6 days before); or dates, with from_date and to_date, for any other range"
+        )
+    )
+    from_date: str | None = Field(default=None, description="Only with period=dates: first day, YYYY-MM-DD (IST)")
+    to_date: str | None = Field(default=None, description="Only with period=dates: last day, YYYY-MM-DD (IST)")
 
 
 class TransactionArgs(BaseModel):
@@ -179,6 +201,7 @@ def make_tools(
     compact: bool = False,
     topups: bool = False,
     include_notes: bool = False,
+    asked_period: NamedPeriod | None = None,
 ) -> list[BaseTool]:
     """LangChain tools whose only arguments are the ones in the schemas above.
 
@@ -188,15 +211,38 @@ def make_tools(
 
     indent = None if compact else 1
 
+    def as_json(data: Any) -> str:
+        # Every *_paise amount also as code-written rupees (*_inr), for the model to copy.
+        return json.dumps(with_rupees(data), indent=indent, ensure_ascii=False)
+
     def dump(payload: BaseModel) -> str:
         fetched.absorb(payload)
-        return payload.model_dump_json(indent=indent, exclude_none=compact)
+        return as_json(payload.model_dump(mode="json", exclude_none=compact))
 
     def list_my_accounts() -> str:
         accounts = ledger.list_accounts(ctx)
         for a in accounts:
             fetched.absorb(a)
-        return json.dumps([json.loads(a.model_dump_json()) for a in accounts], indent=indent)
+        return as_json([a.model_dump(mode="json") for a in accounts])
+
+    def spending(period: str, from_date: str | None = None, to_date: str | None = None) -> str:
+        # The question's own words decide the period when they name one: the model cannot pick another.
+        if asked_period is not None and period != asked_period:
+            raise ValueError(
+                f"the question asks about {asked_period.replace('_', ' ')}: call spending with period={asked_period}"
+            )
+        if period in NAMED_PERIODS:
+            start, end = named_period(period, today_ist(now))
+        else:
+            if not (from_date and to_date):
+                raise ValueError("period=dates needs from_date and to_date (YYYY-MM-DD)")
+            start, end = parse_ist_date(from_date), parse_ist_date(to_date)
+            if start > end:
+                raise ValueError(f"from_date {start} is after to_date {end}")
+        report = ledger.spending(
+            ctx, period, start, end, period_text(start, end), ist_midnight(start), ist_midnight(end) + timedelta(days=1)
+        )
+        return dump(report)
 
     def get_balance(account_id: UUID) -> str:
         return dump(ledger.get_balance(ctx, account_id))
@@ -211,7 +257,7 @@ def make_tools(
         items = ledger.list_topups(ctx, start, end)
         for t in items:
             fetched.absorb(t)
-        return json.dumps([json.loads(t.model_dump_json()) for t in items], indent=indent)
+        return as_json([t.model_dump(mode="json") for t in items])
 
     def explain_transaction(transaction_id: UUID) -> str:
         return dump(ledger.explain_transaction(ctx, transaction_id, include_notes=include_notes))
@@ -237,6 +283,16 @@ def make_tools(
                 "period's opening balance, closing balance, total in, total out and net change, all in paise."
             ),
             args_schema=PeriodArgs,
+        ),
+        StructuredTool.from_function(
+            func=spending,
+            name="spending",
+            description=(
+                "How much the caller spent in a period, over all their accounts: payments to other people only "
+                "(moving money between their own accounts and top-ups are not spending). Code resolves the "
+                "period and returns period_text, the date range to state with the total."
+            ),
+            args_schema=SpendingArgs,
         ),
         StructuredTool.from_function(
             func=explain_transaction,
@@ -369,6 +425,7 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
             compact=compact,
             topups=TOPUPS in features,
             include_notes=asks_about_notes(state["question"]),
+            asked_period=period_named_in(state["question"]),
         )
         by_name = {t.name: t for t in tools}
         bound = deps.chat.bind_tools([*tools, _submit_answer_tool()] if answer_tool else tools)

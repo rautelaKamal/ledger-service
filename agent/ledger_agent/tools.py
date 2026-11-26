@@ -11,7 +11,7 @@ not contain other clients' rows, so the tools cannot tell the difference, and
 neither can the caller.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Literal
 from uuid import UUID
 
@@ -119,6 +119,35 @@ class TopupItem(BaseModel):
     currency: str
     status: Literal["pending", "posted", "failed"]
     created_at: datetime
+
+
+class Payment(BaseModel):
+    """Money that left one of the client's accounts for someone else's (spending)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    transaction_id: UUID
+    account_id: UUID
+    created_at: datetime
+    amount_paise: int
+
+
+class Spending(BaseModel):
+    """What the client spent in a period: totals by code, over all their accounts (step 7g).
+
+    Spending is posted transfers from one of the client's accounts to an account that is not
+    theirs. Moving money between their own accounts is not spending, and neither is a top-up.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    period: str
+    from_date: date  # inclusive, IST
+    to_date: date  # inclusive, IST
+    period_text: str  # the range as the answer must state it, e.g. 16 to 22 Nov 2026 with an en dash
+    total_spent_paise: int
+    payment_count: int
+    payments: list[Payment]
 
 
 class TransactionDetail(BaseModel):
@@ -273,6 +302,57 @@ class LedgerTools:
             total_out_paise=total_out,
             net_change_paise=total_in - total_out,
             transactions=rows[:limit],
+        )
+
+    def spending(
+        self, ctx: ClientContext, period: str, start: date, end: date, text: str, from_: datetime, to: datetime
+    ) -> Spending:
+        """Payments to others from any of the client's accounts in [from_, to); the sum in SQL."""
+        with client_scope(self._pool, ctx) as conn:
+            rows = conn.execute(
+                """
+                SELECT t.id, e.account_id, t.created_at, e.amount_paise
+                  FROM agent_transactions t
+                  JOIN agent_entries e ON e.transaction_id = t.id AND e.own_account AND e.direction = 'debit'
+                 WHERE t.kind = 'transfer' AND t.status = 'posted'
+                   AND t.created_at >= %s AND t.created_at < %s
+                   -- not to one of the client's own accounts: that is moving money, not spending it
+                   AND NOT EXISTS (SELECT 1 FROM agent_entries o
+                                    WHERE o.transaction_id = t.id AND o.direction = 'credit' AND o.own_account)
+                 ORDER BY t.created_at DESC
+                """,
+                (from_, to),
+            ).fetchall()
+            total = conn.execute(
+                """
+                SELECT COALESCE(SUM(e.amount_paise), 0) AS total
+                  FROM agent_transactions t
+                  JOIN agent_entries e ON e.transaction_id = t.id AND e.own_account AND e.direction = 'debit'
+                 WHERE t.kind = 'transfer' AND t.status = 'posted'
+                   AND t.created_at >= %s AND t.created_at < %s
+                   AND NOT EXISTS (SELECT 1 FROM agent_entries o
+                                    WHERE o.transaction_id = t.id AND o.direction = 'credit' AND o.own_account)
+                """,
+                (from_, to),
+            ).fetchone()
+        assert total is not None
+        payments = [
+            Payment(
+                transaction_id=r["id"],
+                account_id=r["account_id"],
+                created_at=r["created_at"],
+                amount_paise=r["amount_paise"],
+            )
+            for r in rows
+        ]
+        return Spending(
+            period=period,
+            from_date=start,
+            to_date=end,
+            period_text=text,
+            total_spent_paise=int(total["total"]),
+            payment_count=len(payments),
+            payments=payments[:MAX_LIMIT],
         )
 
     def notes_of(self, ctx: ClientContext, transaction_ids: list[UUID]) -> dict[UUID, str]:
