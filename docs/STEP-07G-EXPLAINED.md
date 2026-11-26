@@ -228,6 +228,35 @@ and test 5 cover the withheld wording; `test_ask_api` covers the log line.
 These change what the model sees for every account question (the `*_inr` fields, a new tool), so
 the eval's recorded numbers are from before them. Re-running it costs quota and was not done.
 
-### Round 2
+### Round 2 (26 Nov, 20:48 to 20:50 IST, as Meera): 4 questions, all correct and verified
 
-Pending: the user's next check, within the 5 real questions.
+The expected answers were computed first, with plain SQL over the cluster's ledger (payments to
+other people, IST calendar days), and the user compared each answer against them:
+
+| question | answer | expected | sources | time | model calls |
+|---|---|---|---|---|---|
+| what did I spend last week? | From 16–22 Nov 2026 ₹5,081.00 | ₹5,081.00, 4 payments | 4 | 23.8 s | 4 |
+| What did I spend in the last 7 days? (typed) | From 20–26 Nov 2026 ₹5,337.50 | ₹5,337.50, 3 payments | 3 | 11.9 s | 4 |
+| what did I spend this week? | From 23–26 Nov 2026 ₹2,895.00 | ₹2,895.00, 1 payment | 1 | 17.0 s | 4 |
+| what did I spend yesterday? | On 25 Nov 2026 ₹0.00 | nothing | 0 | 8.1 s | 4 |
+
+Every answer took one attempt and one tool call (`spending`), and four model calls: classify, two
+rounds in fetch (call the tool, then "done"), and the answer. The model was 90 % or more of every
+total. Per step, from the LangSmith traces (seconds):
+
+| question | classify | fetch (model) | tool | answer | total |
+|---|---|---|---|---|---|
+| last week | 5.99 | 10.01 | 0.23 | 5.46 | 23.80 |
+| last 7 days | 2.33 | 7.15 | 0.05 | 1.34 | 11.93 |
+| this week | 5.49 | 6.34 | 0.08 | 3.73 | 16.95 |
+| yesterday | 3.80 | 2.42 | 0.06 | 1.44 | 8.09 |
+
+The Mac was overloaded at the time (load average 15 to 20, 9.5 GB of swap; the web pods had
+restarted at 20:44 when their startup probe timed out), which inflates these numbers. The next
+step is to take the model out of the path for these questions (step 7h).
+
+**One more bug, found here.** The per-question timing line (79cd9ea) never reached the pod log:
+the agent's logger had no handler and inherited Python's default WARNING level, so every INFO line
+was dropped, including the existing "tracing: on" line at start-up. The test had passed because
+pytest's log capture raises the level itself. Fixed in the next commit, with a test that starts
+from a fresh process's logging state; the times above come from LangSmith instead.
