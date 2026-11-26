@@ -56,7 +56,7 @@ kc logs job/seed-demo | tail -3
 
 log "waiting for rollouts"
 kc rollout status statefulset/postgres --timeout=180s
-for d in api worker-commands worker-events mock-provider prometheus grafana agent web; do
+for d in api worker-commands worker-events mock-provider prometheus grafana redis agent web; do
   kc rollout status deployment/"$d" --timeout=180s
 done
 kall -n kube-system rollout status deployment/metrics-server --timeout=180s

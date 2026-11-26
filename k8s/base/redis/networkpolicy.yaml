@@ -1,0 +1,22 @@
+# Only the web app talks to Redis: it is the assistant's only caller and the only
+# place the limits are enforced. Redis has no password, so this policy is its door.
+# It needs no egress at all (no DNS, nothing): it only answers.
+# scripts/k8s/smoke.sh tries it from a web pod (allowed) and from others (blocked).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: web
+      ports:
+        - port: redis
+          protocol: TCP
+  egress: []

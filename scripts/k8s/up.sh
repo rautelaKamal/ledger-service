@@ -35,7 +35,7 @@ docker build -t ledger-web:local web/ -q
 
 # Third-party images are pulled here (once, cached by Docker) and copied into
 # the node, so the cluster never downloads anything itself.
-THIRD_PARTY="pgvector/pgvector:pg17 prom/prometheus:v3.15.1 grafana/grafana:12.4.15 grafana/k6:1.8.2 registry.k8s.io/metrics-server/metrics-server:v0.9.1"
+THIRD_PARTY="pgvector/pgvector:pg17 redis:8.10.3-alpine prom/prometheus:v3.15.1 grafana/grafana:12.4.15 grafana/k6:1.8.2 registry.k8s.io/metrics-server/metrics-server:v0.9.1"
 for img in $THIRD_PARTY; do docker image inspect "$img" >/dev/null 2>&1 || docker pull -q "$img"; done
 
 log "loading images into the node"

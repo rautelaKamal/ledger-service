@@ -9,6 +9,8 @@
 #   5. the NetworkPolicy really blocks the metrics ports from a non-Prometheus pod
 #   6. the web app: pages render, its server reaches the API's internal port,
 #      and its egress is fenced (no database)
+#   7. the live assistant's limiter: only web pods reach Redis, and a question over
+#      the day's cap is refused before any model call
 #   7. a reconcile Job runs now and finds 0 problems
 source "$(dirname "$0")/lib.sh"
 need curl; need python3
@@ -186,7 +188,31 @@ pass "web -> api:3000                         allowed"
 if tcp postgres 5432; then die "web -> postgres:5432 reachable: the web app must not touch the database"; fi
 pass "web -> postgres:5432                    blocked"
 
-log "8. reconciliation"
+log "8. the live assistant's rate limiter (Redis)"
+kc rollout status deployment/redis --timeout=60s >/dev/null
+[ "$(kc exec deploy/redis -- redis-cli ping)" = PONG ] || die "redis does not answer PING"
+tcp redis 6379 || die "web -> redis:6379 blocked"
+pass "web -> redis:6379                       allowed"
+# From the api pod, with the same node one-liner (a missing tool must not pass as "blocked").
+kc exec deploy/api -- node -e "1" >/dev/null 2>&1 || die "cannot run node in the api pod"
+if kc exec deploy/api -- node -e "const s=require('net').connect(6379,'redis');s.setTimeout(3000);s.on('connect',()=>process.exit(0));s.on('timeout',()=>process.exit(1));s.on('error',()=>process.exit(1))" >/dev/null 2>&1; then die "api reached redis"; fi
+pass "api -> redis:6379                       blocked"
+if connect redis 6379; then die "agent reached redis"; fi
+pass "agent -> redis:6379                     blocked"
+# The day's cap, as if it were used up (Gemini's quota day: midnight Pacific). One
+# question through the web app must then come back 429 "not sent", with NO model call.
+day=$(TZ=America/Los_Angeles date +%F)
+cap=$(kc get configmap web-config -o jsonpath='{.data.ASSISTANT_DAILY_CAP}')
+kc exec deploy/redis -- redis-cli SET "assistant:global:$day" "$cap" EX 120 >/dev/null
+jar=$(mktemp)
+curl -fsS -c "$jar" -o /dev/null -X POST -d persona=meera "$WEB/api/session"
+code=$(curl -sS -b "$jar" -o /tmp/smoke-ask.json -w '%{http_code}' -X POST "$WEB/api/ask" -H 'content-type: application/json' -d '{"question":"How much do I have in total?"}')
+kc exec deploy/redis -- redis-cli DEL "assistant:global:$day" >/dev/null
+rm -f "$jar"
+[ "$code" = 429 ] && grep -q "of today's questions" /tmp/smoke-ask.json || { cat /tmp/smoke-ask.json; die "over the day's cap: expected 429 and the cap message, got $code"; }
+pass "over the day's cap: 429, \"not sent\" (no model call)"
+
+log "9. reconciliation"
 scripts/k8s/reconcile-now.sh | tail -12
 
 log "smoke test passed"

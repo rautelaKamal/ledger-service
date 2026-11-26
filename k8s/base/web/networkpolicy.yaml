@@ -32,6 +32,14 @@ spec:
       ports:
         - port: 8000
           protocol: TCP
+    # Step 7g: the live assistant's rate limiter.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - port: 6379
+          protocol: TCP
     - to:
         - podSelector:
             matchLabels:

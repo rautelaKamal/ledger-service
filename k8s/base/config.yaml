@@ -64,9 +64,17 @@ data:
   LEDGER_INTERNAL_URL: http://api-metrics:9100
   AGENT_URL: http://agent:8000
   PROVIDER_URL: http://mock-provider:4100
-  # 'fixtures': a script answers from live data, no model call. Switch an overlay
-  # to 'agent' once the assistant (step 7c) is deployed there and the quota allows.
-  ASSISTANT_MODE: fixtures
+  # 'agent' (step 7g): free-text questions go to the live assistant, inside the limits
+  # below (kept in Redis, shared by both web replicas). Over Gemini's quota, or with
+  # Redis down, a script answers and the answer is labelled as such.
+  # 'fixtures': the script answers everything, no model call.
+  ASSISTANT_MODE: agent
+  REDIS_URL: redis://redis:6379
+  # Per visitor: 5 in a row, then one every 3 minutes. All visitors: 40 per Gemini
+  # quota day (at most 320 model calls). See docs/STEP-07G-EXPLAINED.md.
+  ASSISTANT_BURST: "5"
+  ASSISTANT_REFILL_SECONDS: "180"
+  ASSISTANT_DAILY_CAP: "40"
   # True here, and only here: reconcile-cronjob.yaml runs "0 2 * * *" in Asia/Kolkata.
   # Keep the two in step; compose sets no schedule because it has no such job.
   RECONCILE_SCHEDULE: every night at 02:00 IST

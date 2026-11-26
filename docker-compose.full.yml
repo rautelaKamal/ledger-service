@@ -271,9 +271,14 @@ services:
       PROVIDER_URL: http://mock-provider:4100
       GRAFANA_URL: http://localhost:3001
       PROMETHEUS_URL: http://localhost:9090/targets
-      # 'fixtures' (default): a script answers from live data, no model call.
-      # 'agent': the real assistant (spends the Gemini quota; needs GOOGLE_API_KEY).
-      ASSISTANT_MODE: ${ASSISTANT_MODE:-fixtures}
+      # 'agent' (default, step 7g): free text goes to the live assistant, inside the
+      # limits below (Redis). No GOOGLE_API_KEY, over the quota or Redis down: a
+      # labelled scripted answer. 'fixtures': the script answers everything.
+      ASSISTANT_MODE: ${ASSISTANT_MODE:-agent}
+      REDIS_URL: redis://redis:6379
+      ASSISTANT_BURST: ${ASSISTANT_BURST:-5}
+      ASSISTANT_REFILL_SECONDS: ${ASSISTANT_REFILL_SECONDS:-180}
+      ASSISTANT_DAILY_CAP: ${ASSISTANT_DAILY_CAP:-40}
       SESSION_SECRET: ${WEB_SESSION_SECRET:-local-compose-session-secret-not-for-production}
       # No RECONCILE_SCHEDULE: nothing runs reconciliation on a schedule in compose,
       # so the pages do not claim that anything does.
@@ -282,6 +287,8 @@ services:
     depends_on:
       api:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3200/api/healthz >/dev/null || exit 1"]
       interval: 5s
@@ -289,6 +296,19 @@ services:
       retries: 12
     restart: unless-stopped
     mem_limit: 256m
+
+  # The live assistant's rate limiter (step 7g). Counters only: no persistence, and no
+  # published port (only the web container uses it).
+  redis:
+    image: redis:8.10.3-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "16mb", "--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    mem_limit: 48m
 
   # ── On-demand tools ──
 
