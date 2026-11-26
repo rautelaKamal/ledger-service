@@ -30,6 +30,21 @@ from .verify import Citation
 log = logging.getLogger("ledger_agent")
 
 
+def configure_logging() -> None:
+    """Send this service's INFO lines to stderr, the pod log.
+
+    Uvicorn configures only its own loggers. Without this, "ledger_agent" inherits the
+    root logger's WARNING level and every log.info (the per-question timing line, "tracing:
+    on") is dropped: the 7g live check found exactly that. Idempotent.
+    """
+    if not any(getattr(h, "_ledger_agent", False) for h in log.handlers):
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s: %(message)s"))
+        handler._ledger_agent = True  # type: ignore[attr-defined]
+        log.addHandler(handler)
+    log.setLevel(logging.INFO)
+
+
 class AskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     question: str = Field(min_length=1, max_length=2000)
@@ -88,6 +103,7 @@ def create_app(
     embeddings: Embeddings | None = None,
     now_fn: Callable[[], datetime] | None = None,
 ) -> FastAPI:
+    configure_logging()
     app = FastAPI(title="ledger-agent", lifespan=lifespan)
     app.state.metrics = AgentMetrics()
     if settings is not None:

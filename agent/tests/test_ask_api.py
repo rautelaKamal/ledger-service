@@ -86,6 +86,29 @@ def test_every_answer_logs_its_model_calls_and_where_the_time_went(
     assert "my balance" not in line and ctx.client_id not in line  # counts and seconds only
 
 
+def test_the_services_info_lines_reach_the_pod_log(settings: Settings) -> None:
+    """In a fresh process, "ledger_agent" inherits WARNING from the root logger: INFO must be switched on."""
+    import logging
+
+    logger = logging.getLogger("ledger_agent")
+    saved_level, saved_handlers = logger.level, list(logger.handlers)
+    logger.setLevel(logging.NOTSET)
+    logger.handlers.clear()
+    root_level = logging.getLogger().level
+    logging.getLogger().setLevel(logging.WARNING)  # what a fresh process has (pytest may change it)
+    try:
+        assert not logger.isEnabledFor(logging.INFO)  # the bug the live check found
+        client_for(settings, Script())
+        assert logger.isEnabledFor(logging.INFO)
+        assert [h for h in logger.handlers if isinstance(h, logging.StreamHandler)]
+        client_for(settings, Script())  # a second app adds no second handler
+        assert len(logger.handlers) == 1
+    finally:
+        logger.setLevel(saved_level)
+        logger.handlers[:] = saved_handlers
+        logging.getLogger().setLevel(root_level)
+
+
 def test_rate_limit_is_checked_before_any_model_call(
     settings: Settings, seed: Seed, owner: psycopg.Connection[DictRow]
 ) -> None:
