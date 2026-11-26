@@ -258,5 +258,5 @@ step is to take the model out of the path for these questions (step 7h).
 **One more bug, found here.** The per-question timing line (79cd9ea) never reached the pod log:
 the agent's logger had no handler and inherited Python's default WARNING level, so every INFO line
 was dropped, including the existing "tracing: on" line at start-up. The test had passed because
-pytest's log capture raises the level itself. Fixed in the next commit, with a test that starts
+pytest's log capture raises the level itself. Fixed in dc1cf4e, with a test that starts
 from a fresh process's logging state; the times above come from LangSmith instead.
