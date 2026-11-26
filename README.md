@@ -274,7 +274,7 @@ See [docs/STEP-07D-EXPLAINED.md](docs/STEP-07D-EXPLAINED.md).
 ## Run it on Kubernetes (locally, with kind)
 
 The same images on a one-node Kubernetes cluster inside Docker. Needs `kubectl`, `kind`
-(`brew install kind`) and about 1.5 GB of Docker memory. Manifests are plain kustomize
+(`brew install kind`) and about 2.5 GB of Docker memory (2.24 GiB measured with everything running). Manifests are plain kustomize
 (`k8s/base` + `k8s/overlays/kind`); Secrets come from your `.env` and are never committed.
 
 ```bash
@@ -294,6 +294,8 @@ The assistant runs there too (2 replicas, reachable only from pods labelled `app
 keys go into the Secret `agent-secrets` from `agent/.env`, and `SKIP_AGENT_INGEST=1` defers
 embedding the policies when the day's quota is spent. A restart of the kind node container
 loses the cluster (etcd lives in memory); `npm run k8s:down && npm run k8s:up` rebuilds it.
+[docs/STEP-07F-EXPLAINED.md](docs/STEP-07F-EXPLAINED.md) is a full rebuild from the repo (26 Nov 2026), with
+the smoke results, memory per pod, and how to load the policies without embedding them twice.
 
 ## Port 5432 already in use?
 
