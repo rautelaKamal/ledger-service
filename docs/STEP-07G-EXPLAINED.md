@@ -165,4 +165,69 @@ idempotent) finished every rollout. During the same start-up burst the HPA scale
 
 ## 8. The live check
 
-Pending: one manual check by the user, at most 5 real questions, recorded here afterwards.
+### Round 1 (26 Nov, 19:57 IST, as Meera): one question, withheld
+
+"what did I spend last week?" came back after **30.4 s** as the assistant's refusal ("I couldn't
+verify this answer..."), with the Couldn't verify badge. Safe, but a common question unanswered.
+From the LangSmith trace and the `agent_runs` row:
+
+| step | calls | seconds |
+|---|---|---|
+| classify | 1 chat | 4.03 |
+| fetch | 3 chat; `list_my_accounts`, `list_transactions` × 2 (15 to 21 Nov) | 3.51 + 2.68 + 5.48 model, 0.18 tools |
+| answer | 1 chat | 8.10 |
+| answer again (the check failed) | 1 chat | 3.89 |
+| total | **6 chat calls**, 0 embeddings, 3 tools; 11,162 tokens in, 1,445 out | 30.4 (27.7 of it the model) |
+
+**Why the check failed.** Not a disagreement about dates: the verifier never looks at dates, only
+at amounts. Every amount in both answers was a hundred times too large. The tools return paise,
+and the model wrote 104200 paise as ₹1,04,200.00 (it is ₹1,042.00) and the Savings account's
+total out, 990125 paise, as ₹9,90,125.00. None of those is in the data, so the verifier refused
+both answers, correctly. The prompt said "never convert amounts yourself" while giving the model
+only paise, so every rupee figure was a conversion. Two more problems sat underneath: the "total
+out" included ₹5,912.25 that Meera moved from Savings to her own Current account, which is not
+spending; and the model chose the week itself, Sunday 15 to Saturday 21 Nov.
+
+**What changed** (commits 79cd9ea, bbb9563, 80f8497):
+
+- **One meaning, set by code** (`dates.named_period`; weeks run Monday to Sunday, IST). On Thursday
+  26 Nov 2026:
+
+  | the question says | the period | dates |
+  |---|---|---|
+  | yesterday | yesterday | 25 Nov |
+  | this week | this_week | Mon 23 Nov to today, 26 Nov |
+  | last week, previous week | last_week | Mon 16 Nov to Sun 22 Nov |
+  | last 7 days, past seven days, past week | last_7_days | 20 Nov to 26 Nov (today and the 6 days before) |
+
+- **A spending tool.** It resolves the period, sums payments to other people across every
+  account in SQL (moves between the client's own accounts and top-ups are not spending), and
+  returns `period_text` ("16–22 Nov 2026"). When the question names a period, code reads it
+  (`period_named_in`) and the tool refuses any other: the model cannot pick its own week.
+- **Rupees written by code.** Every `*_paise` amount in every tool result now comes with its
+  `*_inr` twin ("₹1,042.00"), and the prompt says to copy it, never to convert.
+- **The checker holds the answer to the same range.** An answer that states a spending total
+  must state its `period_text` with it ("From 16–22 Nov 2026 you spent ₹X"); otherwise it goes
+  back to the model once, like any other failure.
+- **The web wording.** A withheld live answer no longer sits next to "every amount was checked
+  by code". It now reads: "The live assistant answered, but code could not confirm the amounts,
+  so the answer was withheld."
+- **Where the time goes, logged.** Every answered question logs one line with no question text:
+  `answered run=… category=… verified=… attempts=… chat_calls=… embed_calls=… tool_calls=…
+  total_s=… model_s=… tool_s=… steps=classify:… fetch:… answer:… check:…`.
+
+New tests (`agent/tests/test_spending.py`, 24): the four periods and their edges (a Monday, a
+Sunday, across a month and a year); the phrases a question uses, and none or two forcing nothing;
+the rupee twins; the range rule (a hyphen is the same range, the model's Sunday-to-Saturday week
+is not); the spending query (own-account move and top-up excluded, both accounts counted); and the
+whole question for "last week", "this week", "last 7 days" and "yesterday", each answered with
+its range and a verified total. Each part was checked to be needed: without the range rule, two
+tests fail; without the period enforcement, one; without the rupee twins, five. Browser test 31
+and test 5 cover the withheld wording; `test_ask_api` covers the log line.
+
+These change what the model sees for every account question (the `*_inr` fields, a new tool), so
+the eval's recorded numbers are from before them. Re-running it costs quota and was not done.
+
+### Round 2
+
+Pending: the user's next check, within the 5 real questions.
