@@ -4,6 +4,7 @@ import { formatPaise, sumPaise } from '@/lib/money';
 import { PERSONAS, type Persona } from '@/lib/personas';
 import type { Account, PassbookRow } from '@/lib/types';
 import { fromAgentBody, type AgentBody } from '@/lib/agent-answer';
+import { lastSevenDays } from '@/lib/spending';
 import { FALLBACK_NOTICE, type FallbackReason } from '@/lib/assistant-labels';
 import { env } from './env';
 import { clientIdOf } from './identity';
@@ -75,7 +76,9 @@ export function classify(question: string, self: Persona): Intent {
   const aboutSomeone = has(/\b(to|at|on|for) (?!the\b|a\b)\w/);
   if (has(/\b(twice|duplicate|double)\b|\bsame (transfer|request|payment)\b/) && has(/\b(send|sent|pay|paid|transfer|request|payment|charged)\b/)) return 'duplicates';
   if (has(/\btop[- ]?ups?\b/) && !moneyOut) return 'topups';
-  if (moneyOut && has(/\b(last|past) (7|seven) days\b|\bthis week\b/) && !aboutSomeone) return 'spent7';
+  // Only the 7-day phrasing: "this week" means Monday to today for the live assistant, so
+  // the script does not answer it with a different period.
+  if (moneyOut && has(/\b(last|past) (7|seven) days\b/) && !aboutSomeone) return 'spent7';
   if (!moneyOut && !has(/\b(this|last) (month|year|week)\b|\btop.?up/) && (has(/\b(total|altogether|in all|overall)\b/) || has(/\bhow much (money )?(do i have|have i got|is in my)\b/) || has(/\b(my|what'?s my|what is my) (total )?balances?\b/))) return 'total';
   return 'unsupported';
 }
@@ -167,16 +170,16 @@ async function scripted(persona: Persona, question: string): Promise<AssistantAn
 
   if (intent === 'spent7') {
     const accounts = await loadAccounts();
-    const out = (await loadRows(accounts)).filter((r) => r.status === 'posted' && BigInt(r.amountPaise) < 0n && Date.now() - new Date(r.createdAt).getTime() < 7 * 86_400_000);
-    if (out.length === 0) return finish('You sent nothing in the last 7 days.');
-    const total = -sumPaise(out.map((r) => r.amountPaise));
-    steps.push(`Added up ${out.length} outgoing entries in code.`);
+    // The live assistant's meaning (lib/spending.ts): 7 India calendar days, payments to others.
+    const { text, payments: out, totalPaise: total } = lastSevenDays(await loadRows(accounts));
+    if (out.length === 0) return finish(`You spent nothing from ${text}.`);
+    steps.push(`Added up ${out.length} payment${out.length === 1 ? '' : 's'} to other people in code; moving money between your own accounts is not spending.`);
     const biggest = [...out].sort((a, b) => (BigInt(a.amountPaise) < BigInt(b.amountPaise) ? -1 : 1)).slice(0, 3);
     const list = biggest.map((r) => {
       const ref = cite({ kind: 'transaction', title: r.counterparty ? `To ${r.counterparty.name}` : 'Transfer', lines: [`${dayLabel(r.createdAt)}, from ${r.account}`, `id ${r.id.slice(0, 8)}…`] });
       return `${fact(-BigInt(r.amountPaise))} to ${r.counterparty?.name ?? 'an account'}${ref}`;
     });
-    return finish(`In the last 7 days you sent ${fact(total)} in ${out.length} transfer${out.length === 1 ? '' : 's'}. The largest: ${list.join(', ')}.`);
+    return finish(`From ${text} you spent ${fact(total)} in ${out.length} payment${out.length === 1 ? '' : 's'}. The largest: ${list.join(', ')}.`);
   }
 
   if (intent === 'total') {

@@ -602,7 +602,8 @@ test('20. the demo assistant answers only what it knows: anything else gets the 
   expect(topups.answer).toMatch(/^(In the last 14 days you have|You have no top-ups)/);
   const spent = await ask('What did I spend in the last 7 days?');
   expect(spent.verified).toBe(true);
-  expect(spent.answer).toMatch(/^(In the last 7 days you sent|You sent nothing)/);
+  // The live assistant's meaning and wording (lib/spending.ts): the range first, then the total.
+  expect(spent.answer).toMatch(/^(From \d{1,2}( [A-Z][a-z]{2}( \d{4})?)?\u2013\d{1,2} [A-Z][a-z]{2} \d{4} you spent ₹|You spent nothing from )/);
   const twice = await ask('What happens if I send the same transfer twice?');
   expect(twice.verified).toBe(true);
   expect(twice.answer).toMatch(/^You cannot pay twice/);
