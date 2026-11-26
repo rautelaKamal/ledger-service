@@ -107,8 +107,19 @@ jobs:
           --health-interval 2s
           --health-timeout 3s
           --health-retries 30
+      # The live assistant's rate limiter (step 7g): its unit tests and the browser tests use it.
+      redis:
+        image: redis:8.10.3-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
     env:
       CI: "true"
+      REDIS_URL: redis://127.0.0.1:6379
       DATABASE_URL: postgres://ledger_app:ledger_app_local@localhost:5432/ledger_e2e
       OWNER_DATABASE_URL: postgres://ledger_owner:ledger_owner_local@localhost:5432/ledger_e2e
       WORKER_DATABASE_URL: postgres://ledger_worker:ledger_worker_local@localhost:5432/ledger_e2e
@@ -153,6 +164,9 @@ jobs:
         working-directory: web
       - name: Typecheck (TypeScript 7)
         run: npm run typecheck
+        working-directory: web
+      - name: Unit tests (the assistant's rate limiter, against Redis)
+        run: npm run test:unit
         working-directory: web
       - name: Lint (typescript-eslint, on the TypeScript 6 API; no warnings allowed)
         run: npm run lint

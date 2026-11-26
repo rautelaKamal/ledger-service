@@ -21,5 +21,19 @@ services:
       timeout: 3s
       retries: 30
 
+  # The web app's rate limiter for the live assistant (step 7g): counters with an
+  # expiry and nothing worth keeping, so no persistence. Bound to localhost: it has
+  # no password, and only the web server on this machine needs it.
+  redis:
+    image: redis:8.10.3-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "32mb", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
 volumes:
   ledger_pgdata:
