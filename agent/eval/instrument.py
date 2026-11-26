@@ -132,11 +132,21 @@ class TimedLedgerTools(LedgerTools):
         from_: datetime | None = None,
         to: datetime | None = None,
         limit: int = 50,
+        include_notes: bool = False,
     ) -> TransactionsReport:
-        return self._timed(self._inner.list_transactions, ctx, account_id, from_, to, limit)  # type: ignore[no-any-return]
+        return self._timed(  # type: ignore[no-any-return]
+            self._inner.list_transactions, ctx, account_id, from_, to, limit, include_notes
+        )
+
+    def notes_of(self, ctx: ClientContext, transaction_ids: list[UUID]) -> dict[UUID, str]:
+        return self._timed(self._inner.notes_of, ctx, transaction_ids)  # type: ignore[no-any-return]
 
     def list_topups(self, ctx: ClientContext, from_: datetime, to: datetime) -> list[TopupItem]:
         return self._timed(self._inner.list_topups, ctx, from_, to)  # type: ignore[no-any-return]
 
-    def explain_transaction(self, ctx: ClientContext, transaction_id: UUID) -> TransactionDetail:
-        return self._timed(self._inner.explain_transaction, ctx, transaction_id)  # type: ignore[no-any-return]
+    def explain_transaction(
+        self, ctx: ClientContext, transaction_id: UUID, include_notes: bool = False
+    ) -> TransactionDetail:
+        return self._timed(  # type: ignore[no-any-return]
+            self._inner.explain_transaction, ctx, transaction_id, include_notes
+        )

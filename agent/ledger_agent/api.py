@@ -21,6 +21,7 @@ from .dates import now_utc
 from .db import ClientContext, create_pool
 from .llm import UpstreamModelError, build_chat_model, build_embeddings
 from .metrics import AgentMetrics
+from .notes import CitedNote
 from .prompts import FALLBACK_TEXT, MODEL_BUSY_TEXT, REFUSAL_TEXT
 from .runs import RateLimitedError
 from .service import Assistant
@@ -39,6 +40,8 @@ class AskResponse(BaseModel):
     citations: list[Citation]
     verified: bool
     run_id: int
+    # Cited transactions' notes, read from the ledger by code, for the client to see as quoted user text.
+    notes: list[CitedNote]
 
 
 @asynccontextmanager
@@ -158,7 +161,11 @@ def create_app(
         return JSONResponse(
             status_code=200,
             content=AskResponse(
-                answer=result.answer, citations=result.citations, verified=result.verified, run_id=result.run_id
+                answer=result.answer,
+                citations=result.citations,
+                verified=result.verified,
+                run_id=result.run_id,
+                notes=list(result.notes),
             ).model_dump(mode="json"),
         )
 

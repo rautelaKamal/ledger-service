@@ -70,6 +70,12 @@ function Answer({ turn, answer }: { turn: Turn; answer: AssistantAnswer }) {
                   {l}
                 </p>
               ))}
+              {c.quote !== undefined ? (
+                <figure className="mt-1">
+                  <figcaption className="text-sm text-ink-soft">Note, as it was typed</figcaption>
+                  <blockquote className="border-l-2 border-rule pl-2 text-sm whitespace-pre-wrap break-words text-ink">{c.quote}</blockquote>
+                </figure>
+              ) : null}
             </div>
           ))}
         </aside>

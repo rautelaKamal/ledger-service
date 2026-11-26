@@ -30,19 +30,21 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from .dates import period_bounds
 from .db import ClientContext, client_scope
 from .llm import UpstreamModelError
+from .notes import asks_about_notes
 from .prompts import (
     ANSWER_INSTRUCTIONS,
     FALLBACK_TEXT,
     REFUSAL_TEXT,
     classify_instructions,
     feedback_block,
+    new_boundary,
     system_prompt,
     wrap_policy,
     wrap_tool_result,
 )
 from .rag import RetrievedChunk, query_text, search
 from .tools import DEFAULT_LIMIT, LedgerTools, NotFoundError
-from .verify import Answer, Citation, Fetched, ToolCallRecord, verify
+from .verify import Answer, Citation, Fetched, ToolCallRecord, is_final, verify
 
 Category = Literal["account", "policy", "both", "out_of_scope"]
 
@@ -119,6 +121,7 @@ class RunContext:
 
     fetched: Fetched = field(default_factory=Fetched)
     usage: Usage = field(default_factory=Usage)
+    boundary: str = field(default_factory=new_boundary)  # this request's data-block tag (prompts.new_boundary)
 
 
 @dataclass(frozen=True)
@@ -170,6 +173,7 @@ def make_tools(
     now: datetime,
     compact: bool = False,
     topups: bool = False,
+    include_notes: bool = False,
 ) -> list[BaseTool]:
     """LangChain tools whose only arguments are the ones in the schemas above.
 
@@ -194,7 +198,8 @@ def make_tools(
 
     def list_transactions(account_id: UUID, from_date: str | None = None, to_date: str | None = None) -> str:
         start, end = period_bounds(from_date, to_date, now)
-        return dump(ledger.list_transactions(ctx, account_id, start, end, limit=20 if compact else DEFAULT_LIMIT))
+        limit = 20 if compact else DEFAULT_LIMIT
+        return dump(ledger.list_transactions(ctx, account_id, start, end, limit=limit, include_notes=include_notes))
 
     def list_my_topups(from_date: str | None = None, to_date: str | None = None) -> str:
         start, end = period_bounds(from_date, to_date, now)
@@ -204,7 +209,7 @@ def make_tools(
         return json.dumps([json.loads(t.model_dump_json()) for t in items], indent=indent)
 
     def explain_transaction(transaction_id: UUID) -> str:
-        return dump(ledger.explain_transaction(ctx, transaction_id))
+        return dump(ledger.explain_transaction(ctx, transaction_id, include_notes=include_notes))
 
     tools: list[BaseTool] = [
         StructuredTool.from_function(
@@ -324,14 +329,14 @@ def _prefetch_accounts(deps: Deps, run: RunContext, compact: bool) -> str:
     }
     run.fetched.absorb(payload)
     run.fetched.calls.append(ToolCallRecord(name="list_my_accounts", args={"prefetched": True}, ok=True))
-    return wrap_tool_result("list_my_accounts", json.dumps(payload, indent=None if compact else 1))
+    return wrap_tool_result(run.boundary, "list_my_accounts", json.dumps(payload, indent=None if compact else 1))
 
 
 def build_graph(deps: Deps, run: RunContext) -> Any:
     features = deps.features
     answer_tool = ANSWER_TOOL in features
     compact = COMPACT in features
-    system = SystemMessage(system_prompt(deps.now, features))
+    system = SystemMessage(system_prompt(deps.now, run.boundary, features))
 
     def classify(state: State) -> State:
         parsed = _structured(
@@ -343,14 +348,25 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
         return {"category": cast(Classification, parsed).category}
 
     def fetch(state: State) -> State:
-        tools = make_tools(deps.ledger, deps.ctx, run.fetched, deps.now, compact=compact, topups=TOPUPS in features)
+        tools = make_tools(
+            deps.ledger,
+            deps.ctx,
+            run.fetched,
+            deps.now,
+            compact=compact,
+            topups=TOPUPS in features,
+            include_notes=asks_about_notes(state["question"]),
+        )
         by_name = {t.name: t for t in tools}
         bound = deps.chat.bind_tools([*tools, _submit_answer_tool()] if answer_tool else tools)
         context = [_prefetch_accounts(deps, run, compact)] if PREFETCH in features else []
         first: list[str] = [*context]
         if answer_tool and state.get("retrieved"):
             # 'both' with answer_tool: the policies were retrieved first, so the answer can be submitted here.
-            first += [wrap_policy(c.id, c.source_file, c.heading, c.content) for c in state.get("retrieved") or []]
+            first += [
+                wrap_policy(run.boundary, c.id, c.source_file, c.heading, c.content)
+                for c in state.get("retrieved") or []
+            ]
         first.append(state["question"])
         messages: list[BaseMessage] = [system, HumanMessage("\n\n".join(first))]
         calls = 0
@@ -380,7 +396,8 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
                 else:
                     calls += 1
                     content = _run_tool(by_name[name], args, run.fetched)
-                messages.append(ToolMessage(content=wrap_tool_result(name, content), tool_call_id=call_id))
+                block = wrap_tool_result(run.boundary, name, content)
+                messages.append(ToolMessage(content=block, tool_call_id=call_id))
             if calls >= deps.max_tool_calls and not answer_tool:
                 break
         out: State = {"transcript": messages[2:], "context": context}
@@ -414,7 +431,7 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
             if isinstance(message, ToolMessage):
                 parts.append(str(message.content))
         for chunk in state.get("retrieved") or []:
-            parts.append(wrap_policy(chunk.id, chunk.source_file, chunk.heading, chunk.content))
+            parts.append(wrap_policy(run.boundary, chunk.id, chunk.source_file, chunk.heading, chunk.content))
         parts.append(f"Question: {state['question']}")
         draft = cast(Answer, _structured(deps, run, Answer, [system, HumanMessage("\n\n".join(parts))]))
         return {"draft": draft, "attempts": (state.get("attempts") or 0) + 1}
@@ -427,7 +444,7 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
         if not problems:
             return {"final_answer": draft.answer, "final_citations": list(draft.citations), "verified": True}
         failures = [*(state.get("failures") or []), problems]
-        if (state.get("attempts") or 0) >= MAX_ATTEMPTS:
+        if (state.get("attempts") or 0) >= MAX_ATTEMPTS or any(is_final(p) for p in problems):
             return {"failures": failures, "final_answer": FALLBACK_TEXT, "final_citations": [], "verified": False}
         return {"failures": failures}
 

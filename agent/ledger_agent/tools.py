@@ -21,9 +21,14 @@ from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, ConfigDict
 
 from .db import ClientContext, client_scope
+from .notes import UserNote
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
+
+
+def _note(text: str | None, include: bool) -> UserNote | None:
+    return UserNote(text=text) if include and text else None
 
 
 class NotFoundError(Exception):
@@ -78,7 +83,7 @@ class TransactionSummary(BaseModel):
     transaction_id: UUID
     kind: Literal["transfer", "topup", "refund", "opening"]
     status: Literal["pending", "posted", "failed"]
-    note: str | None
+    note: UserNote | None  # only when the question asks for notes (include_notes)
     created_at: datetime
     posted_at: datetime | None
     # 'in'/'out' for a posted movement on this account; None for a top-up that has no entries yet
@@ -122,7 +127,7 @@ class TransactionDetail(BaseModel):
     transaction_id: UUID
     kind: Literal["transfer", "topup", "refund", "opening"]
     status: Literal["pending", "posted", "failed"]
-    note: str | None
+    note: UserNote | None  # only when the question asks for notes (include_notes)
     created_at: datetime
     posted_at: datetime | None
     legs: list[Leg]
@@ -166,8 +171,12 @@ class LedgerTools:
         from_: datetime | None = None,
         to: datetime | None = None,
         limit: int = DEFAULT_LIMIT,
+        include_notes: bool = False,
     ) -> TransactionsReport:
-        """Movements on one account, newest first, within [from_, to), with period totals."""
+        """Movements on one account, newest first, within [from_, to), with period totals.
+
+        Notes are left out unless include_notes: they are text other clients can write (notes.py).
+        """
         limit = max(1, min(limit, MAX_LIMIT))
         from_ = from_ or datetime(1970, 1, 1, tzinfo=UTC)
         to = to or datetime(9999, 12, 31, tzinfo=UTC)
@@ -230,7 +239,7 @@ class LedgerTools:
                 transaction_id=r["id"],
                 kind=r["kind"],
                 status=r["status"],
-                note=r["note"],
+                note=_note(r["note"], include_notes),
                 created_at=r["created_at"],
                 posted_at=r["posted_at"],
                 # a credit on my account is money IN, a debit is money OUT
@@ -244,7 +253,7 @@ class LedgerTools:
                 transaction_id=r["id"],
                 kind=r["kind"],
                 status=r["status"],
-                note=r["note"],
+                note=_note(r["note"], include_notes),
                 created_at=r["created_at"],
                 posted_at=r["posted_at"],
                 direction=None,
@@ -265,6 +274,17 @@ class LedgerTools:
             net_change_paise=total_in - total_out,
             transactions=rows[:limit],
         )
+
+    def notes_of(self, ctx: ClientContext, transaction_ids: list[UUID]) -> dict[UUID, str]:
+        """The notes of those of the client's transactions that have one, read by code (never by the model)."""
+        if not transaction_ids:
+            return {}
+        with client_scope(self._pool, ctx) as conn:
+            rows = conn.execute(
+                "SELECT id, note FROM agent_transactions WHERE id = ANY(%s) AND note IS NOT NULL",
+                (transaction_ids,),
+            ).fetchall()
+        return {r["id"]: r["note"] for r in rows}
 
     def list_topups(self, ctx: ClientContext, from_: datetime, to: datetime) -> list[TopupItem]:
         """Every top-up onto any of the client's accounts in [from_, to), newest first, whatever its status."""
@@ -292,7 +312,9 @@ class LedgerTools:
             for r in rows
         ]
 
-    def explain_transaction(self, ctx: ClientContext, transaction_id: UUID) -> TransactionDetail:
+    def explain_transaction(
+        self, ctx: ClientContext, transaction_id: UUID, include_notes: bool = False
+    ) -> TransactionDetail:
         with client_scope(self._pool, ctx) as conn:
             tx = conn.execute(
                 "SELECT id, kind, status, note, created_at, posted_at FROM agent_transactions WHERE id = %s",
@@ -316,7 +338,7 @@ class LedgerTools:
             transaction_id=tx["id"],
             kind=tx["kind"],
             status=tx["status"],
-            note=tx["note"],
+            note=_note(tx["note"], include_notes),
             created_at=tx["created_at"],
             posted_at=tx["posted_at"],
             legs=[

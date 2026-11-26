@@ -8,7 +8,8 @@ from psycopg.rows import DictRow
 
 from ledger_agent.api import create_app
 from ledger_agent.config import Settings
-from ledger_agent.verify import Answer
+from ledger_agent.notes import copies_a_note
+from ledger_agent.verify import Answer, Citation
 
 from .conftest import Seed
 from .fakes import FakeChatModel, FakeEmbeddings, Script, ToolCall
@@ -51,7 +52,13 @@ def test_ask_answers_and_records_a_run(settings: Settings, seed: Seed, owner: ps
         res = client.post("/ask", json={"question": "balance?"}, headers={"X-Client-Id": ctx.client_id})
     assert res.status_code == 200
     body = res.json()
-    assert body == {"answer": "Your balance is ₹42.00.", "citations": [], "verified": True, "run_id": body["run_id"]}
+    assert body == {
+        "answer": "Your balance is ₹42.00.",
+        "citations": [],
+        "verified": True,
+        "run_id": body["run_id"],
+        "notes": [],
+    }
     assert runs_for(owner, ctx.client_id) == 1
 
 
@@ -156,3 +163,50 @@ def test_metrics_count_outcomes_calls_and_tokens_without_client_data(
     assert value('agent_tool_calls_total{ok="true",tool="list_my_accounts"}') == 1
     assert value('agent_question_duration_seconds_count{category="account"}') == 1
     assert ctx.client_id not in text and "balance" not in text.lower()  # no client ids, no questions or answers
+
+
+NOTE_20 = (  # 20 words, legitimate
+    "Deposit for the two bedroom flat on Park Street with the first month of rent and the keys handed over"
+)
+
+
+def test_a_long_note_is_returned_in_full_by_code_and_never_copied_by_the_model(
+    settings: Settings, seed: Seed, owner: psycopg.Connection[DictRow]
+) -> None:
+    """What was it for? The answer says it in a few words and cites it; the note comes from the database."""
+    ctx, other = seed.client(), seed.client()
+    acct = seed.account(ctx, "main")
+    payee = seed.account(other, "landlord")
+    seed.posted("topup", seed.settlement(), acct, 2_000_000)
+    tx = seed.posted("transfer", acct, payee, 900_000, note=NOTE_20)
+    cite = [Citation(type="transaction", id=str(tx))]
+    copied = Answer(answer=f"₹9,000.00: {NOTE_20}.", citations=cite)
+    own_words = Answer(answer="That ₹9,000.00 was the deposit for a flat.", citations=cite)
+    script = Script(
+        rounds=[[ToolCall("explain_transaction", {"transaction_id": str(tx)})], []], answers=[copied, own_words]
+    )
+    client, _ = client_for(settings, script)
+    with client:
+        res = client.post(
+            "/ask", json={"question": "What was my ₹9,000.00 transfer for?"}, headers={"X-Client-Id": ctx.client_id}
+        )
+    body = res.json()
+    assert res.status_code == 200 and body["verified"] is True
+    assert body["answer"] == own_words.answer and not copies_a_note(body["answer"], {NOTE_20})
+    assert body["notes"] == [{"transaction_id": str(tx), "text": NOTE_20}]  # in full, from the ledger
+
+
+def test_no_note_is_returned_when_the_question_is_not_about_one(settings: Settings, seed: Seed) -> None:
+    ctx, other = seed.client(), seed.client()
+    acct = seed.account(ctx, "main")
+    seed.posted("topup", seed.settlement(), acct, 2_000_000)
+    tx = seed.posted("transfer", acct, seed.account(other, "landlord"), 900_000, note=NOTE_20)
+    cite = [Citation(type="transaction", id=str(tx))]
+    script = Script(
+        rounds=[[ToolCall("list_my_accounts", {})], []],
+        answers=[Answer(answer="Your balance is ₹11,000.00.", citations=cite)],
+    )
+    client, _ = client_for(settings, script)
+    with client:
+        res = client.post("/ask", json={"question": "What is my balance?"}, headers={"X-Client-Id": ctx.client_id})
+    assert res.json()["notes"] == []

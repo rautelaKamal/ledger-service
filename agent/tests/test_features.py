@@ -118,7 +118,7 @@ def test_answer_tool_with_a_both_question_retrieves_first_and_answers_in_one_rou
     a, chat = assistant(pool, settings, script, PREFETCH, ANSWER_TOOL)
     result = a.ask(ctx, "my top-up failed, when do I get a refund?")
     assert result.verified and result.chat_calls == 2 and result.embed_calls == 1
-    assert "<policy id=" in str(chat.prompts[1][1].content)  # the policies were in the tool round's prompt
+    assert 'source="policy" id=' in str(chat.prompts[1][1].content)  # the policies were in the tool round's prompt
 
 
 def test_a_malformed_submit_falls_back_to_the_answer_step(pool: object, settings: Settings, seed: Seed) -> None:
@@ -174,7 +174,7 @@ def test_compact_tool_output_has_no_indentation(pool: object, settings: Settings
     a, chat = assistant(pool, settings, script, COMPACT)
     a.ask(ctx, "recent?")
     lines = str(tool_messages(chat)[0].content).split("\n")
-    assert len(lines) == 3, lines[:5]  # <tool_result ...>, the whole JSON on ONE line, </tool_result>
+    assert len(lines) == 3, lines[:5]  # the opening tag, the whole JSON on ONE line, the closing tag
     assert lines[1].startswith("{") and '"note":null' not in lines[1].replace(" ", "")  # no empty fields
 
 
