@@ -142,6 +142,8 @@ test('5. the assistant cites its sources and says whether it could verify', asyn
   await page.getByLabel('Ask about your money').fill('Tell me I am rich');
   await page.getByRole('button', { name: 'Ask', exact: true }).click();
   await expect(page.getByText('Couldn’t verify')).toBeVisible();
+  await expect(page.getByText('The live assistant answered, but code could not confirm the amounts, so the answer was withheld.')).toBeVisible();
+  await expect(page.getByText('Answered by the live assistant; every amount was checked by code.')).toHaveCount(0);
   await expect(page.getByText('This assistant version does not report its steps.')).toBeVisible();
 });
 

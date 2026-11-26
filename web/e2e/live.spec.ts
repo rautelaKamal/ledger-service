@@ -112,6 +112,21 @@ test.describe('live mode', () => {
   });
 });
 
+test.describe('live mode, an answer code could not confirm', () => {
+  test.use({ baseURL: WEB_LIVE });
+
+  test('31. a withheld answer is not labelled "every amount was checked"', async ({ page, request }) => {
+    await request.post(`${AGENT}/mode`, { data: { mode: 'unverified' } });
+    await become(page, 'Arjun Rao');
+    await page.goto('/assistant');
+    const turn = await ask(page, 'what did I spend last week?');
+    await expect(turn.getByText('Couldn’t verify')).toBeVisible();
+    await expect(turn.getByText('The live assistant answered, but code could not confirm the amounts, so the answer was withheld.')).toBeVisible();
+    await expect(turn.getByText(LIVE_FOOTNOTE)).toHaveCount(0);
+    await expectAccessible(page);
+  });
+});
+
 test.describe('Redis down', () => {
   test.use({ baseURL: WEB_NO_REDIS });
 

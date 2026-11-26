@@ -19,6 +19,13 @@ const FOOTNOTE: Record<AssistantAnswer['mode'], string> = {
   agent: 'Answered by the live assistant; every amount was checked by code.',
   fallback: 'A script answered from your live ledger data; no AI model was called.',
 };
+// The live assistant's answer failed the check twice, so the agent sent its refusal instead.
+// "Every amount was checked" would read as if the withheld answer had passed.
+export const WITHHELD = 'The live assistant answered, but code could not confirm the amounts, so the answer was withheld.';
+
+function footnote(answer: AssistantAnswer): string {
+  return answer.mode === 'agent' && answer.verified === false ? WITHHELD : FOOTNOTE[answer.mode];
+}
 
 const KIND: Record<Citation['kind'], string> = { account: 'Account', transaction: 'Transaction', policy: 'Policy' };
 
@@ -57,7 +64,7 @@ function Answer({ turn, answer }: { turn: Turn; answer: AssistantAnswer }) {
           {answer.verified === false ? (
             <span className="rounded-sm border border-failed px-2 py-0.5 text-failed">Couldn&rsquo;t verify</span>
           ) : null}
-          <span className="text-sm text-ink-soft">{FOOTNOTE[answer.mode]}</span>
+          <span className="text-sm text-ink-soft">{footnote(answer)}</span>
         </div>
         {answer.steps ? (
           <details>

@@ -6,7 +6,7 @@
 //   POST /ask     answers, or (mode "quota") 503 model_quota, as the agent does when
 //                 Gemini refuses on a rate/quota limit
 //   GET  /calls   every question that reached it, so a test can prove "no model call"
-//   POST /mode    {"mode": "answer" | "quota"}
+//   POST /mode    {"mode": "answer" | "quota" | "unverified"}
 //   POST /reset   forget the calls, back to "answer"
 import { createServer } from 'node:http';
 
@@ -37,6 +37,15 @@ createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === '/ask') {
     const { question } = await read(req);
     calls.push({ question, clientId: req.headers['x-client-id'] });
+    if (mode === 'unverified') {
+      // What the agent sends when its answer failed the check twice (prompts.FALLBACK_TEXT).
+      return send(200, {
+        answer: "I couldn't verify this answer against your records, so I would rather not state it. Please contact support with your question, or try asking in a different way.",
+        verified: false,
+        citations: [],
+        notes: [],
+      });
+    }
     if (mode === 'quota') {
       return send(503, { error: { code: 'model_quota', message: 'The assistant is temporarily unavailable. Please try again in a moment.' } });
     }
