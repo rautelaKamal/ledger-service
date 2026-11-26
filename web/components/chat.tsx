@@ -6,7 +6,19 @@ import { Button } from '@/components/ui/button';
 import type { AssistantAnswer, Citation } from '@/lib/server/assistant';
 import { cn } from '@/lib/utils';
 
-type Turn = { id: number; question: string } & ({ state: 'waiting' } | { state: 'done'; answer: AssistantAnswer } | { state: 'error'; message: string });
+type Turn = { id: number; question: string } & (
+  | { state: 'waiting' }
+  | { state: 'done'; answer: AssistantAnswer }
+  | { state: 'error'; message: string }
+  // Over a limit: the question was never sent to the model. Not a failure of the service.
+  | { state: 'limited'; message: string }
+);
+
+const FOOTNOTE: Record<AssistantAnswer['mode'], string> = {
+  scripted: 'Demo mode: a script answered from your live ledger data; no AI model was called.',
+  agent: 'Answered by the live assistant; every amount was checked by code.',
+  fallback: 'A script answered from your live ledger data; no AI model was called.',
+};
 
 const KIND: Record<Citation['kind'], string> = { account: 'Account', transaction: 'Transaction', policy: 'Policy' };
 
@@ -34,15 +46,18 @@ function Answer({ turn, answer }: { turn: Turn; answer: AssistantAnswer }) {
   return (
     <div className="grid gap-5 lg:grid-cols-[1fr_17rem]">
       <div className="flex flex-col gap-3">
+        {answer.mode === 'fallback' && answer.notice ? (
+          <p role="note" className="border-l-4 border-pending bg-surface py-1.5 pl-3 font-medium">
+            {answer.notice}
+          </p>
+        ) : null}
         <AnswerText text={answer.answer} prefix={prefix} />
         <div className="flex flex-wrap items-center gap-3">
           {answer.verified === true ? <Stamp land>Verified ✓</Stamp> : null}
           {answer.verified === false ? (
             <span className="rounded-sm border border-failed px-2 py-0.5 text-failed">Couldn&rsquo;t verify</span>
           ) : null}
-          <span className="text-sm text-ink-soft">
-            {answer.mode === 'scripted' ? 'Demo mode: a script answered from your live ledger data; no AI model was called.' : 'Answered by the assistant; every amount was checked by code.'}
-          </span>
+          <span className="text-sm text-ink-soft">{FOOTNOTE[answer.mode]}</span>
         </div>
         {answer.steps ? (
           <details>
@@ -99,10 +114,13 @@ export function Chat({ suggested }: { suggested: readonly string[] }) {
     setQuestion('');
     try {
       const res = await fetch('/api/ask', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question: text }) });
-      const body = (await res.json()) as AssistantAnswer | { error: string };
-      setTurns((t) =>
-        t.map((x) => (x.id !== id ? x : 'error' in body || !res.ok ? { id, question: text, state: 'error', message: 'error' in body ? body.error : `status ${res.status}` } : { id, question: text, state: 'done', answer: body })),
-      );
+      const body = (await res.json()) as AssistantAnswer | { error: string; limited?: boolean };
+      const turn = (): Turn => {
+        if ('error' in body) return body.limited ? { id, question: text, state: 'limited', message: body.error } : { id, question: text, state: 'error', message: body.error };
+        if (!res.ok) return { id, question: text, state: 'error', message: `status ${res.status}` };
+        return { id, question: text, state: 'done', answer: body };
+      };
+      setTurns((t) => t.map((x) => (x.id !== id ? x : turn())));
     } catch {
       setTurns((t) => t.map((x) => (x.id === id ? { id, question: text, state: 'error', message: 'the web server did not answer' } : x)));
     }
@@ -124,6 +142,11 @@ export function Chat({ suggested }: { suggested: readonly string[] }) {
               {turn.state === 'error' ? (
                 <p role="alert" className="border-l-2 border-failed pl-3 text-failed">
                   No answer: {turn.message}.
+                </p>
+              ) : null}
+              {turn.state === 'limited' ? (
+                <p role="status" className="border-l-4 border-pending pl-3">
+                  Not sent to the live assistant: {turn.message}.
                 </p>
               ) : null}
               {turn.state === 'done' ? <Answer turn={turn} answer={turn.answer} /> : null}

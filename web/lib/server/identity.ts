@@ -1,5 +1,5 @@
 import 'server-only';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { cookies } from 'next/headers';
 import { personaByKey, type Persona, type PersonaKey } from '@/lib/personas';
 import { env } from './env';
@@ -44,4 +44,32 @@ export async function currentPersona(): Promise<Persona | undefined> {
 
 export function clientIdOf(persona: Persona): string {
   return CLIENT_IDS[persona.key];
+}
+
+// The visitor: one browser, whichever persona it is being. The live assistant's
+// per-visitor limit is keyed on this, not on the persona (many visitors can be Meera).
+// A random id, signed like the persona cookie so it cannot be edited into another
+// visitor's. Clearing cookies gives a new id and a fresh bucket; the global daily cap
+// is what bounds that.
+export const VISITOR_COOKIE = 'demo_visitor';
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export function visitorCookieValue(id: string): string {
+  return `${id}.${sign(`visitor:${id}`)}`;
+}
+
+export function readVisitor(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const dot = raw.lastIndexOf('.');
+  const id = raw.slice(0, dot);
+  if (dot < 1 || !UUID.test(id)) return undefined;
+  const given = Buffer.from(raw.slice(dot + 1));
+  const expected = Buffer.from(sign(`visitor:${id}`));
+  return given.length === expected.length && timingSafeEqual(given, expected) ? id : undefined;
+}
+
+/** This browser's visitor id; isNew when the caller must set the cookie on its response. */
+export async function currentVisitor(): Promise<{ id: string; isNew: boolean }> {
+  const id = readVisitor((await cookies()).get(VISITOR_COOKIE)?.value);
+  return id ? { id, isNew: false } : { id: randomUUID(), isNew: true };
 }

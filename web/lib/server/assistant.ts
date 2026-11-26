@@ -4,8 +4,10 @@ import { formatPaise, sumPaise } from '@/lib/money';
 import { PERSONAS, type Persona } from '@/lib/personas';
 import type { Account, PassbookRow } from '@/lib/types';
 import { fromAgentBody, type AgentBody } from '@/lib/agent-answer';
+import { FALLBACK_NOTICE, type FallbackReason } from '@/lib/assistant-labels';
 import { env } from './env';
 import { clientIdOf } from './identity';
+import { redisLimiter, type Limiter } from './limits';
 import { getAccounts, getPassbook, UpstreamError } from './ledger';
 import { POLICIES, type PolicyExcerpt } from './policies';
 
@@ -19,8 +21,15 @@ export interface Citation {
 }
 
 export interface AssistantAnswer {
-  /** 'scripted': no model; a script answered from live data. 'agent': the real assistant. */
-  mode: 'scripted' | 'agent';
+  /**
+   * 'scripted': demo mode, no model; a script answered from live data.
+   * 'agent': the live assistant.
+   * 'fallback': the live assistant was asked for but could not be used (over the free
+   * quota, or its rate limiter is down), so the script answered; `notice` says so.
+   */
+  mode: 'scripted' | 'agent' | 'fallback';
+  /** Shown above a fallback answer, word for word (FALLBACK_NOTICE). */
+  notice?: string;
   /** Text with [n] markers that point at citations. */
   answer: string;
   /** true / false: checked against the fetched data. null: there was nothing to check (a refusal). */
@@ -204,8 +213,70 @@ async function viaAgent(persona: Persona, question: string): Promise<AssistantAn
   return fromAgentBody({ ...body, answer: body.answer });
 }
 
-export function ask(persona: Persona, question: string): Promise<AssistantAnswer> {
-  return env.ASSISTANT_MODE === 'agent' ? viaAgent(persona, question) : scripted(persona, question);
+/** What /api/ask sends back: an answer, or a clear reason why the question was not sent. */
+export type AskOutcome = { kind: 'answer'; answer: AssistantAnswer } | { kind: 'limited'; message: string };
+
+let limiter: Limiter | undefined;
+function theLimiter(): Limiter {
+  limiter ??= redisLimiter(
+    env.REDIS_URL,
+    { burst: env.ASSISTANT_BURST, refillMs: env.ASSISTANT_REFILL_SECONDS * 1000, dailyCap: env.ASSISTANT_DAILY_CAP, timeoutMs: env.REDIS_TIMEOUT_MS },
+    env.ASSISTANT_REDIS_PREFIX,
+  );
+  return limiter;
 }
+
+const minutes = (ms: number) => Math.max(1, Math.ceil(ms / 60_000));
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const istTime = (ms: number) =>
+  new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(Date.now() + ms));
+
+async function fallback(persona: Persona, question: string, reason: FallbackReason): Promise<AskOutcome> {
+  const answer = await scripted(persona, question);
+  return { kind: 'answer', answer: { ...answer, mode: 'fallback', notice: FALLBACK_NOTICE[reason] } };
+}
+
+/**
+ * The live assistant, inside its limits. In order:
+ *   1. the visitor's bucket and the global daily cap (Redis, atomic). Over either: a
+ *      clear message and no model call. Redis unreachable: the script answers, labelled.
+ *   2. the agent. Over Gemini's quota (503 model_quota) or not configured: the script
+ *      answers, labelled. The agent's own per-person daily limit (429): a message.
+ *      Anything else is an error, as before.
+ */
+async function live(persona: Persona, visitor: string, question: string): Promise<AskOutcome> {
+  const decision = await theLimiter().take(visitor);
+  if (!decision.ok) {
+    if (decision.reason === 'unavailable') return fallback(persona, question, 'limiterDown');
+    if (decision.reason === 'visitor') {
+      return {
+        kind: 'limited',
+        message: `You can ask the live assistant ${plural(env.ASSISTANT_BURST, 'question')} in a row, then one more every ${plural(minutes(env.ASSISTANT_REFILL_SECONDS * 1000), 'minute')}. Your next question can go in about ${plural(minutes(decision.retryAfterMs), 'minute')}`,
+      };
+    }
+    return {
+      kind: 'limited',
+      message: `The live assistant has answered all ${env.ASSISTANT_DAILY_CAP} of today's questions, the limit that keeps this demo inside Gemini's free quota. It starts again at ${istTime(decision.resetsInMs)} IST`,
+    };
+  }
+  try {
+    return { kind: 'answer', answer: await viaAgent(persona, question) };
+  } catch (err) {
+    if (!(err instanceof UpstreamError) || err.service !== 'assistant') throw err;
+    const code = (err.body as { error?: { code?: string } } | null)?.error?.code;
+    if (err.status === 503 && code === 'model_quota') return fallback(persona, question, 'quota');
+    if (err.status === 503 && code === 'model_not_configured') return fallback(persona, question, 'notConfigured');
+    if (err.status === 429) return { kind: 'limited', message: 'The assistant’s daily limit for this person is reached; try tomorrow' };
+    throw err;
+  }
+}
+
+export async function ask(persona: Persona, visitor: string, question: string): Promise<AskOutcome> {
+  if (env.ASSISTANT_MODE === 'agent') return live(persona, visitor, question);
+  return { kind: 'answer', answer: await scripted(persona, question) };
+}
+
+/** What the page tells the visitor about the limits before they ask. */
+export const liveLimits = () => ({ burst: env.ASSISTANT_BURST, refillMinutes: minutes(env.ASSISTANT_REFILL_SECONDS * 1000), dailyCap: env.ASSISTANT_DAILY_CAP });
 
 export const assistantMode = (): 'scripted' | 'agent' => (env.ASSISTANT_MODE === 'agent' ? 'agent' : 'scripted');

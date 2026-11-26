@@ -9,6 +9,24 @@ const API = 'http://127.0.0.1:3100';
 const INTERNAL = 'http://127.0.0.1:9200';
 const PROVIDER = 'http://127.0.0.1:4200';
 const WEB = 'http://127.0.0.1:3200';
+// Step 7g: the same web app in live mode, against a stand-in agent (e2e/mock-agent.mjs)
+// and Redis; and once more with Redis unreachable, to prove the fail-safe.
+const WEB_LIVE = 'http://127.0.0.1:3201';
+const WEB_NO_REDIS = 'http://127.0.0.1:3202';
+const MOCK_AGENT = 'http://127.0.0.1:8201';
+const REDIS_URL = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
+const live = {
+  LEDGER_API_URL: 'http://127.0.0.1:3100',
+  LEDGER_INTERNAL_URL: 'http://127.0.0.1:9200',
+  PROVIDER_URL: 'http://127.0.0.1:4200',
+  ASSISTANT_MODE: 'agent',
+  AGENT_URL: MOCK_AGENT,
+  ASSISTANT_REDIS_PREFIX: 'e2e-assistant',
+  ASSISTANT_BURST: '2',
+  ASSISTANT_REFILL_SECONDS: '600',
+  ASSISTANT_DAILY_CAP: '100',
+  SESSION_SECRET: 'e2e-session-secret-at-least-32-characters-long',
+};
 const ci = Boolean(process.env.CI);
 const envFile = '--env-file-if-exists=.env.e2e.local';
 
@@ -41,6 +59,7 @@ export default defineConfig({
   use: { baseURL: WEB, trace: 'retain-on-failure', locale: 'en-IN', timezoneId: 'Asia/Kolkata' },
   projects: [
     { name: 'flows', testMatch: /flows\.spec\.ts/, use: { ...devices['Desktop Chrome'], viewport: { width: 1366, height: 900 } } },
+    { name: 'live', testMatch: /live\.spec\.ts/, use: { ...devices['Desktop Chrome'], viewport: { width: 1366, height: 900 } } },
     { name: 'lighthouse', testMatch: /lighthouse\.spec\.ts/ },
     ...devicesMatrix.flatMap((d) =>
       themes.map((theme) => ({
@@ -90,6 +109,31 @@ export default defineConfig({
         ASSISTANT_MODE: 'fixtures',
         SESSION_SECRET: 'e2e-session-secret-at-least-32-characters-long',
       },
+      reuseExistingServer,
+      timeout: 60_000,
+    },
+    {
+      name: 'mock-agent',
+      command: 'node e2e/mock-agent.mjs',
+      url: `${MOCK_AGENT}/healthz`,
+      env: { MOCK_AGENT_PORT: '8201' },
+      reuseExistingServer,
+      timeout: 30_000,
+    },
+    {
+      name: 'web-live',
+      command: 'npx next start --port 3201 --hostname 127.0.0.1',
+      url: `${WEB_LIVE}/api/healthz`,
+      env: { ...live, REDIS_URL },
+      reuseExistingServer,
+      timeout: 60_000,
+    },
+    {
+      name: 'web-no-redis',
+      command: 'npx next start --port 3202 --hostname 127.0.0.1',
+      url: `${WEB_NO_REDIS}/api/healthz`,
+      // Port 1: nothing listens there, as when the Redis pod is gone.
+      env: { ...live, REDIS_URL: 'redis://127.0.0.1:1' },
       reuseExistingServer,
       timeout: 60_000,
     },
