@@ -24,3 +24,6 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+
+# Database dumps (README: "Back up the dev database").
+backups/

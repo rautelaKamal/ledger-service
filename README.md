@@ -300,6 +300,39 @@ loses the cluster (etcd lives in memory); `npm run k8s:down && npm run k8s:up` r
 If another Postgres already listens on 5432, set `POSTGRES_PORT=5434` (or any free port) in
 `.env`, and change `5432` to that port in the URLs in `.env` and `.env.test`.
 
+## Back up the dev database before any risky change
+
+Docker volumes live inside Docker's own disk image, and nothing backs them up. Before
+anything that could lose data, dump the `ledger` database to the Mac's disk. Risky changes
+include a Docker update, reset or cleanup, `down -v`, an untested migration, and a long eval
+run.
+
+```bash
+mkdir -p backups                                    # git-ignored
+docker compose exec -T postgres pg_dump -U postgres -d ledger -Fc \
+  > backups/ledger-$(date +%Y%m%d-%H%M).dump
+ls -lh backups/                                     # a 0-byte file means the dump failed
+```
+
+To restore into an empty volume, run `npm run db:up` first (it creates the roles), but not
+`npm run migrate`: the dump already contains the schema and the migrations table.
+
+```bash
+docker compose exec -T postgres pg_restore -U postgres -d ledger --exit-on-error \
+  < backups/ledger-YYYYMMDD-HHMM.dump
+```
+
+On macOS, also check that Docker's disk image is really there and not deleted while still
+open. The first command must list the file; the second must print nothing:
+
+```bash
+ls -lh ~/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw
+lsof +L1 | grep -i docker.raw
+```
+
+Never delete `Docker.raw` by hand. Docker keeps using a deleted disk until it restarts,
+then starts again with an empty one.
+
 ## Resetting the database
 
 `k8s/base/postgres/init/00-roles.sql` creates the roles and databases. Docker runs it **only when the
