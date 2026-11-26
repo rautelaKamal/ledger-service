@@ -1,5 +1,6 @@
 """POST /ask: the header, the cap, upstream failures, and what gets recorded."""
 
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 
@@ -62,6 +63,27 @@ def test_ask_answers_and_records_a_run(settings: Settings, seed: Seed, owner: ps
         "notes": [],
     }
     assert runs_for(owner, ctx.client_id) == 1
+
+
+def test_every_answer_logs_its_model_calls_and_where_the_time_went(
+    settings: Settings, seed: Seed, caplog: pytest.LogCaptureFixture
+) -> None:
+    ctx = seed.client()
+    acct = seed.account(ctx, "main")
+    seed.posted("topup", seed.settlement(), acct, 4_200)
+    client, _ = client_for(
+        settings,
+        Script(rounds=[[ToolCall("list_my_accounts", {})], []], answers=[Answer(answer="Your balance is ₹42.00.")]),
+    )
+    with caplog.at_level("INFO", logger="ledger_agent"), client:
+        res = client.post("/ask", json={"question": "my balance?"}, headers={"X-Client-Id": ctx.client_id})
+    assert res.status_code == 200
+    (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("answered ")]
+    # classify + two fetch rounds + the answer = 4 chat calls; one tool; each step timed.
+    assert "category=account verified=True attempts=1 chat_calls=4 embed_calls=0 tool_calls=1" in line
+    assert re.search(r"total_s=\d+\.\d\d model_s=\d+\.\d\d tool_s=\d+\.\d\d", line)
+    assert re.search(r"steps=classify:\d+\.\d\d fetch:\d+\.\d\d answer:\d+\.\d\d check:\d+\.\d\d$", line)
+    assert "my balance" not in line and ctx.client_id not in line  # counts and seconds only
 
 
 def test_rate_limit_is_checked_before_any_model_call(

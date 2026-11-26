@@ -166,6 +166,22 @@ def create_app(
                 headers={"Retry-After": "30"},
                 content={"error": {"code": "model_unavailable", "message": MODEL_BUSY_TEXT}},
             )
+        # Where the time went, per question (step 7g). No question or answer text: only counts and seconds.
+        log.info(
+            "answered run=%s category=%s verified=%s attempts=%d chat_calls=%d embed_calls=%d tool_calls=%d "
+            "total_s=%.2f model_s=%.2f tool_s=%.2f steps=%s",
+            result.run_id,
+            result.category,
+            result.verified,
+            result.attempts,
+            result.chat_calls,
+            result.embed_calls,
+            len(result.tools),
+            result.latency_s,
+            result.model_s,
+            result.tool_s,
+            " ".join(f"{name}:{seconds:.2f}" for name, seconds in result.steps_s),
+        )
         metrics.answered(result, REFUSAL_TEXT, FALLBACK_TEXT, time.perf_counter() - started)
         return JSONResponse(
             status_code=200,

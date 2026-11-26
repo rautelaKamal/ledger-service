@@ -9,6 +9,7 @@ times to try, or whether its answer is good enough (verify.py decides that).
 """
 
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -106,6 +107,10 @@ class Usage:
     completion_tokens: int = 0
     chat_calls: int = 0
     embed_calls: int = 0
+    tool_calls: int = 0
+    model_seconds: float = 0.0  # waiting for the model API (chat and embeddings)
+    tool_seconds: float = 0.0  # running ledger tools (SQL)
+    step_seconds: dict[str, float] = field(default_factory=dict)  # wall time per graph step, summed over repeats
 
     def add(self, message: Any) -> None:
         """One chat-model response: one call, and its tokens."""
@@ -267,9 +272,17 @@ def _invoke_model(call: Callable[[], Any]) -> Any:
         raise UpstreamModelError(f"{type(e).__name__}: {e}", quota=is_quota_error(e)) from e
 
 
+def _timed_model(run: RunContext, call: Callable[[], Any]) -> Any:
+    started = time.perf_counter()
+    try:
+        return _invoke_model(call)
+    finally:
+        run.usage.model_seconds += time.perf_counter() - started
+
+
 def _structured(deps: Deps, run: RunContext, schema: type[BaseModel], messages: list[BaseMessage]) -> BaseModel:
     runnable = deps.chat.with_structured_output(schema, include_raw=True)
-    result = cast(dict[str, Any], _invoke_model(lambda: runnable.invoke(messages)))
+    result = cast(dict[str, Any], _timed_model(run, lambda: runnable.invoke(messages)))
     run.usage.add(result.get("raw"))
     parsed = result.get("parsed")
     if not isinstance(parsed, schema):
@@ -373,7 +386,7 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
         draft: Answer | None = None
         # With answer_tool, one extra round: the model may need it to submit after its last tool.
         for _round in range(deps.max_tool_calls + (1 if answer_tool else 0)):
-            ai = cast(AIMessage, _invoke_model(lambda: bound.invoke(messages)))
+            ai = cast(AIMessage, _timed_model(run, lambda: bound.invoke(messages)))
             run.usage.add(ai)
             messages.append(ai)
             if not ai.tool_calls:
@@ -395,7 +408,10 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
                     run.fetched.calls.append(ToolCallRecord(name=name, args=args, ok=False))
                 else:
                     calls += 1
+                    started = time.perf_counter()
                     content = _run_tool(by_name[name], args, run.fetched)
+                    run.usage.tool_seconds += time.perf_counter() - started
+                    run.usage.tool_calls += 1
                 block = wrap_tool_result(run.boundary, name, content)
                 messages.append(ToolMessage(content=block, tool_call_id=call_id))
             if calls >= deps.max_tool_calls and not answer_tool:
@@ -411,7 +427,7 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
     @traceable(run_type="embedding", name="embed_question")
     def embed_question(question: str) -> list[float]:
         run.usage.embed_calls += 1
-        return cast(list[float], _invoke_model(lambda: deps.embeddings.embed_query(query_text(question))))
+        return cast(list[float], _timed_model(run, lambda: deps.embeddings.embed_query(query_text(question))))
 
     @traceable(run_type="retriever", name="policy_search")
     def policy_search(vector: list[float]) -> list[RetrievedChunk]:
@@ -469,14 +485,29 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
     def after_check(state: State) -> str:
         return END if "final_answer" in state else "answer"
 
+    def timed(name: str, step: Callable[[State], State]) -> Callable[[State], State]:
+        # Wall time per step (model + tools + our code), summed when a step repeats (answer, check).
+        def run_step(state: State) -> State:
+            started = time.perf_counter()
+            try:
+                return step(state)
+            finally:
+                seconds = run.usage.step_seconds
+                seconds[name] = seconds.get(name, 0.0) + time.perf_counter() - started
+
+        return run_step
+
     graph = StateGraph(State)
     node = cast(Callable[[Callable[[State], State]], Any], lambda fn: fn)  # LangGraph's node overloads defeat mypy
-    graph.add_node("classify", node(classify))
-    graph.add_node("fetch", node(fetch))
-    graph.add_node("retrieve", node(retrieve))
-    graph.add_node("answer", node(answer))
-    graph.add_node("check", node(check))
-    graph.add_node("refuse", node(refuse))
+    for name, step in (
+        ("classify", classify),
+        ("fetch", fetch),
+        ("retrieve", retrieve),
+        ("answer", answer),
+        ("check", check),
+        ("refuse", refuse),
+    ):
+        graph.add_node(name, node(timed(name, step)))
     graph.add_edge(START, "classify")
     graph.add_conditional_edges(
         "classify", after_classify, {"fetch": "fetch", "retrieve": "retrieve", "refuse": "refuse"}

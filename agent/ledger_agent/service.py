@@ -37,6 +37,12 @@ class AskResult:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     tools: tuple[tuple[str, bool], ...] = ()
+    # Where the time went (step 7g): logged by the API for every answered question.
+    attempts: int = 0
+    latency_s: float = 0.0
+    model_s: float = 0.0
+    tool_s: float = 0.0
+    steps_s: tuple[tuple[str, float], ...] = ()
 
 
 class Assistant:
@@ -129,4 +135,9 @@ class Assistant:
             prompt_tokens=outcome.usage.prompt_tokens,
             completion_tokens=outcome.usage.completion_tokens,
             tools=tuple((c.name, c.ok) for c in outcome.tools_called),
+            attempts=outcome.attempts,
+            latency_s=latency_ms / 1000,
+            model_s=outcome.usage.model_seconds,
+            tool_s=outcome.usage.tool_seconds,
+            steps_s=tuple(outcome.usage.step_seconds.items()),
         )
