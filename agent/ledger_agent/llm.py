@@ -5,6 +5,7 @@ fakes that implement the same two LangChain base classes.
 """
 
 from langchain_core.embeddings import Embeddings
+from langchain_core.exceptions import ModelRateLimitError
 from langchain_core.language_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 
@@ -12,7 +13,35 @@ from .config import Settings
 
 
 class UpstreamModelError(Exception):
-    """The model provider failed (rate limit, outage, bad key). Our answer is 503, not an agent_runs row."""
+    """The model provider failed (rate limit, outage, bad key). Our answer is 503, not an agent_runs row.
+
+    quota: the provider refused because a rate or quota limit was reached (HTTP 429,
+    RESOURCE_EXHAUSTED). The caller can then say so honestly ("over today's free limit")
+    instead of "try again in a moment".
+    """
+
+    def __init__(self, message: str, *, quota: bool = False) -> None:
+        super().__init__(message)
+        self.quota = quota
+
+
+def is_quota_error(error: BaseException) -> bool:
+    """A provider rate/quota refusal anywhere in the exception's cause chain.
+
+    Chat calls raise langchain's ModelRateLimitError on a 429; embeddings raise a generic
+    error caused by google-genai's ClientError, which carries code 429 and status
+    RESOURCE_EXHAUSTED. Matched on types and codes, never on message text.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ModelRateLimitError):
+            return True
+        if getattr(current, "code", None) == 429 or getattr(current, "status", None) == "RESOURCE_EXHAUSTED":
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def require_key(settings: Settings) -> str:

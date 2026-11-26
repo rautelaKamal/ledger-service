@@ -18,8 +18,9 @@ from .service import AskResult
 #   refused         out of scope, politely declined
 #   rate_limited    429: over the client's daily questions
 #   upstream_failed 503: the model API failed (not counted against the client)
+#   upstream_quota  503: the model API refused on a rate/quota limit (not counted either)
 #   bad_request     400/422 (no X-Client-Id, empty question)
-OUTCOMES = ("verified", "fallback", "refused", "rate_limited", "upstream_failed", "bad_request")
+OUTCOMES = ("verified", "fallback", "refused", "rate_limited", "upstream_failed", "upstream_quota", "bad_request")
 LATENCY_BUCKETS = (0.5, 1, 2, 3, 5, 8, 13, 21, 34, 55)
 
 

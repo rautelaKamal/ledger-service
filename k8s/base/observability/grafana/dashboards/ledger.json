@@ -971,7 +971,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (outcome) (increase(agent_questions_total{outcome=~\"fallback|upstream_failed\"}[1h]))",
+          "expr": "sum by (outcome) (increase(agent_questions_total{outcome=~\"fallback|upstream_failed|upstream_quota\"}[1h]))",
           "legendFormat": "{{outcome}}",
           "refId": "A"
         }

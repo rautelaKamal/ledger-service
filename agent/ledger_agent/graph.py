@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .dates import period_bounds
 from .db import ClientContext, client_scope
-from .llm import UpstreamModelError
+from .llm import UpstreamModelError, is_quota_error
 from .notes import asks_about_notes
 from .prompts import (
     ANSWER_INSTRUCTIONS,
@@ -264,7 +264,7 @@ def _invoke_model(call: Callable[[], Any]) -> Any:
     except UpstreamModelError:
         raise
     except Exception as e:
-        raise UpstreamModelError(f"{type(e).__name__}: {e}") from e
+        raise UpstreamModelError(f"{type(e).__name__}: {e}", quota=is_quota_error(e)) from e
 
 
 def _structured(deps: Deps, run: RunContext, schema: type[BaseModel], messages: list[BaseMessage]) -> BaseModel:

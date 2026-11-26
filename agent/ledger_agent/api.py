@@ -150,7 +150,16 @@ def create_app(
             )
         except UpstreamModelError as e:
             # Logged, not recorded: an upstream failure is not a question the client asked.
-            log.warning("upstream model failure for client %s: %s", ctx.client_id, e)
+            log.warning("upstream model failure for client %s (quota: %s): %s", ctx.client_id, e.quota, e)
+            if e.quota:
+                # Its own code, so the web app can say "over today's free limit" and show a
+                # labelled scripted answer instead of pretending the assistant is just busy.
+                metrics.not_answered("upstream_quota")
+                return JSONResponse(
+                    status_code=503,
+                    headers={"Retry-After": "60"},
+                    content={"error": {"code": "model_quota", "message": MODEL_BUSY_TEXT}},
+                )
             metrics.not_answered("upstream_failed")
             return JSONResponse(
                 status_code=503,

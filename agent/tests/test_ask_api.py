@@ -1,8 +1,10 @@
 """POST /ask: the header, the cap, upstream failures, and what gets recorded."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 import psycopg
+import pytest
 from fastapi.testclient import TestClient
 from psycopg.rows import DictRow
 
@@ -85,7 +87,8 @@ def test_upstream_failure_is_503_and_does_not_count(
 ) -> None:
     ctx = seed.client()
     limited = Settings(database_url=settings.database_url, pool_size=2, daily_limit=1)
-    client, chat = client_for(limited, Script(category="account", fail_with=RuntimeError("429 RESOURCE_EXHAUSTED")))
+    outage = RuntimeError("503 UNAVAILABLE. This model is currently experiencing high demand.")
+    client, chat = client_for(limited, Script(category="account", fail_with=outage))
     with client:
         headers = {"X-Client-Id": ctx.client_id}
         res = client.post("/ask", json={"question": "balance?"}, headers=headers)
@@ -97,6 +100,48 @@ def test_upstream_failure_is_503_and_does_not_count(
         ok = client.post("/ask", json={"question": "again"}, headers=headers)
     assert ok.status_code == 200  # ... so it did not use up the (single) daily question
     assert runs_for(owner, ctx.client_id) == 1
+
+
+def _chat_rate_limit() -> Exception:
+    """What ChatGoogleGenerativeAI raises on HTTP 429 (a langchain ModelRateLimitError)."""
+    from langchain_google_genai.chat_models import GoogleRateLimitError
+
+    return GoogleRateLimitError("Error calling model 'gemini-3.5-flash-lite' (RESOURCE_EXHAUSTED): 429")
+
+
+def _embedding_quota() -> Exception:
+    """What GoogleGenerativeAIEmbeddings raises on HTTP 429: a generic error caused by a ClientError."""
+    from google.genai.errors import ClientError
+
+    quota = {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "Quota exceeded"}}
+    try:
+        try:
+            raise ClientError(429, quota)
+        except ClientError as e:
+            raise RuntimeError("Error embedding content: quota") from e
+    except RuntimeError as outer:
+        return outer
+
+
+@pytest.mark.parametrize("make_error", [_chat_rate_limit, _embedding_quota], ids=["chat-429", "embedding-429"])
+def test_provider_quota_is_503_model_quota_and_does_not_count(
+    settings: Settings, seed: Seed, owner: psycopg.Connection[DictRow], make_error: Callable[[], Exception]
+) -> None:
+    ctx = seed.client()
+    client, _ = client_for(settings, Script(category="account", fail_with=make_error()))
+    with client:
+        res = client.post("/ask", json={"question": "balance?"}, headers={"X-Client-Id": ctx.client_id})
+    assert res.status_code == 503
+    assert res.json()["error"]["code"] == "model_quota"  # the web app shows a labelled scripted answer
+    assert runs_for(owner, ctx.client_id) == 0  # not the client's question either
+
+
+def test_quota_is_told_by_type_and_code_never_by_message_text() -> None:
+    from ledger_agent.llm import is_quota_error
+
+    assert is_quota_error(_chat_rate_limit()) and is_quota_error(_embedding_quota())
+    assert not is_quota_error(RuntimeError("429 RESOURCE_EXHAUSTED"))  # just text
+    assert not is_quota_error(RuntimeError("503 UNAVAILABLE"))
 
 
 def test_agent_cannot_insert_a_run_for_another_client(pool: object, seed: Seed) -> None:
