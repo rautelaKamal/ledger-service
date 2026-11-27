@@ -82,7 +82,9 @@ def test_every_answer_logs_its_model_calls_and_where_the_time_went(
     # classify + two fetch rounds + the answer = 4 chat calls; one tool; each step timed.
     assert "category=account verified=True attempts=1 chat_calls=4 embed_calls=0 tool_calls=1" in line
     assert re.search(r"total_s=\d+\.\d\d model_s=\d+\.\d\d tool_s=\d+\.\d\d", line)
-    assert re.search(r"steps=classify:\d+\.\d\d fetch:\d+\.\d\d answer:\d+\.\d\d check:\d+\.\d\d$", line)
+    assert re.search(
+        r"steps=route:\d+\.\d\d classify:\d+\.\d\d fetch:\d+\.\d\d answer:\d+\.\d\d check:\d+\.\d\d$", line
+    )
     assert "my balance" not in line and ctx.client_id not in line  # counts and seconds only
 
 

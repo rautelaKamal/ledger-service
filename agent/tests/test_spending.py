@@ -145,6 +145,12 @@ EXPECTED: dict[str, tuple[str, int, str]] = {
 }
 
 
+# The same questions with more to them: the fast path (fast.py, tests in test_fast_path.py) answers the plain
+# ones without a model, so these go through the graph, where the model must still keep to the named period.
+def through_the_graph(question: str) -> str:
+    return question.rstrip("?") + ", and on what?"
+
+
 def ask(
     pool: object, settings: Settings, ctx: Any, question: str, rounds: list[list[ToolCall]], answers: list[Answer]
 ) -> tuple[Any, FakeChatModel]:
@@ -163,11 +169,12 @@ def tool_output(chat: FakeChatModel, name: str) -> str:
 
 
 @pytest.mark.parametrize("period", ["last_week", "this_week", "last_7_days", "yesterday"])
-def test_spending_question_answers_with_the_range_and_a_verified_total(
+def test_a_spending_question_through_the_graph_states_the_range_and_a_verified_total(
     pool: object, settings: Settings, seed: Seed, period: NamedPeriod
 ) -> None:
     world = World(seed)
-    question, total, stated = EXPECTED[period]
+    plain, total, stated = EXPECTED[period]
+    question = through_the_graph(plain)
     text = period_text(*named_period(period, THURSDAY))
     assert period_named_in(question) == period
     result, chat = ask(
@@ -193,7 +200,7 @@ def test_the_model_cannot_choose_another_week_than_the_question_names(
         pool,
         settings,
         world.ctx,
-        "what did I spend last week?",
+        through_the_graph("what did I spend last week?"),
         # First it tries its own dates (the live check's Sunday-to-Saturday week); the tool refuses.
         rounds=[
             [ToolCall("spending", {"period": "dates", "from_date": "2026-11-15", "to_date": "2026-11-21"})],
@@ -220,7 +227,7 @@ def test_an_answer_without_the_range_is_sent_back_once(pool: object, settings: S
         pool,
         settings,
         world.ctx,
-        "what did I spend last week?",
+        through_the_graph("what did I spend last week?"),
         rounds=[[ToolCall("spending", {"period": "last_week"})], []],
         answers=[
             Answer(answer="Last week you spent ₹1,853.00.", citations=[]),
@@ -238,7 +245,7 @@ def test_paise_read_as_rupees_is_still_caught(pool: object, settings: Settings, 
         pool,
         settings,
         world.ctx,
-        "what did I spend last week?",
+        through_the_graph("what did I spend last week?"),
         rounds=[[ToolCall("spending", {"period": "last_week"})], []],
         answers=[Answer(answer=f"From 16{EN_DASH}22 Nov 2026 you spent ₹1,04,200.00 on the 16th.", citations=[])],
     )

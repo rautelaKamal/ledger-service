@@ -16,7 +16,7 @@ from psycopg_pool import ConnectionPool
 from .config import Settings
 from .dates import now_utc
 from .db import ClientContext, client_scope
-from .graph import Deps, run_question
+from .graph import Deps, Progress, run_question
 from .notes import CitedNote, asks_about_notes
 from .runs import RATE_WINDOW, RateLimitedError, RunRecord, insert_run, questions_in_window
 from .tools import LedgerTools
@@ -79,7 +79,13 @@ class Assistant:
         notes = self._ledger.notes_of(ctx, ids)
         return tuple(CitedNote(transaction_id=i, text=notes[i]) for i in dict.fromkeys(ids) if i in notes)
 
-    def ask(self, ctx: ClientContext, question: str, trace: RunnableConfig | None = None) -> AskResult:
+    def ask(
+        self,
+        ctx: ClientContext,
+        question: str,
+        trace: RunnableConfig | None = None,
+        progress: Progress | None = None,
+    ) -> AskResult:
         # 1. The cap, BEFORE any model call: a client over the limit costs nothing upstream.
         with client_scope(self._pool, ctx) as conn:
             asked = questions_in_window(conn)
@@ -98,6 +104,7 @@ class Assistant:
                 ctx=ctx,
                 now=self._now(),
                 features=self._settings.features,
+                progress=progress,
             ),
             question,
             trace,

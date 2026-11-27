@@ -1,5 +1,7 @@
 """The assistant's graph: fixed steps, not a free-roaming agent.
 
+    route: a plain "what did I spend <period>?" -> spending (code) -> write (template) -> check; no model (fast.py)
+    otherwise:
     classify -> fetch (ledger tools, at most 4 calls) -> retrieve (policies) -> answer -> verify
               \\-> refuse                                                          |      ^   |
                                                                                    +------+   +-> fallback
@@ -10,7 +12,8 @@ times to try, or whether its answer is good enough (verify.py decides that).
 
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Literal, TypedDict, cast
@@ -40,6 +43,7 @@ from .dates import (
     today_ist,
 )
 from .db import ClientContext, client_scope
+from .fast import spending_answer, spending_question
 from .llm import UpstreamModelError, is_quota_error
 from .notes import asks_about_notes
 from .prompts import (
@@ -54,7 +58,7 @@ from .prompts import (
     wrap_tool_result,
 )
 from .rag import RetrievedChunk, query_text, search
-from .tools import DEFAULT_LIMIT, LedgerTools, NotFoundError
+from .tools import DEFAULT_LIMIT, LedgerTools, NotFoundError, Spending
 from .verify import Answer, Citation, Fetched, ToolCallRecord, is_final, verify, with_rupees
 
 Category = Literal["account", "policy", "both", "out_of_scope"]
@@ -68,6 +72,9 @@ CLASSIFY = "classify"  # two hints for the classifier: transfers naming the othe
 FEATURES = (PREFETCH, ANSWER_TOOL, COMPACT, TOPUPS, CLASSIFY)
 MAX_TOOL_CALLS = 4
 MAX_ATTEMPTS = 2
+
+# Told when each step starts (seconds=None) and ends (its seconds), for live progress (POST /ask/stream).
+Progress = Callable[[str, float | None], None]
 
 
 class Classification(BaseModel):
@@ -161,6 +168,7 @@ class Deps:
     now: datetime
     max_tool_calls: int = MAX_TOOL_CALLS
     features: frozenset[str] = frozenset()
+    progress: Progress | None = None
 
 
 class State(TypedDict, total=False):
@@ -191,6 +199,14 @@ class Outcome:
 
 
 # ───────────── tools over LedgerTools, closed over the request's ClientContext ─────────────
+
+
+def spending_report(ledger: LedgerTools, ctx: ClientContext, period: NamedPeriod, now: datetime) -> Spending:
+    """A named period's spending: code resolves the dates (dates.named_period) and the range text."""
+    start, end = named_period(period, today_ist(now))
+    return ledger.spending(
+        ctx, period, start, end, period_text(start, end), ist_midnight(start), ist_midnight(end) + timedelta(days=1)
+    )
 
 
 def make_tools(
@@ -232,13 +248,12 @@ def make_tools(
                 f"the question asks about {asked_period.replace('_', ' ')}: call spending with period={asked_period}"
             )
         if period in NAMED_PERIODS:
-            start, end = named_period(period, today_ist(now))
-        else:
-            if not (from_date and to_date):
-                raise ValueError("period=dates needs from_date and to_date (YYYY-MM-DD)")
-            start, end = parse_ist_date(from_date), parse_ist_date(to_date)
-            if start > end:
-                raise ValueError(f"from_date {start} is after to_date {end}")
+            return dump(spending_report(ledger, ctx, period, now))
+        if not (from_date and to_date):
+            raise ValueError("period=dates needs from_date and to_date (YYYY-MM-DD)")
+        start, end = parse_ist_date(from_date), parse_ist_date(to_date)
+        if start > end:
+            raise ValueError(f"from_date {start} is after to_date {end}")
         report = ledger.spending(
             ctx, period, start, end, period_text(start, end), ist_midnight(start), ist_midnight(end) + timedelta(days=1)
         )
@@ -326,6 +341,21 @@ def _invoke_model(call: Callable[[], Any]) -> Any:
         raise
     except Exception as e:
         raise UpstreamModelError(f"{type(e).__name__}: {e}", quota=is_quota_error(e)) from e
+
+
+@contextmanager
+def _step(run: RunContext, progress: Progress | None, name: str) -> Iterator[None]:
+    """Wall time of one step (model + tools + our code), summed when a step repeats; reported as it happens."""
+    if progress is not None:
+        progress(name, None)
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        seconds = time.perf_counter() - started
+        run.usage.step_seconds[name] = run.usage.step_seconds.get(name, 0.0) + seconds
+    if progress is not None:
+        progress(name, seconds)  # only when the step succeeded
 
 
 def _timed_model(run: RunContext, call: Callable[[], Any]) -> Any:
@@ -543,14 +573,9 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
         return END if "final_answer" in state else "answer"
 
     def timed(name: str, step: Callable[[State], State]) -> Callable[[State], State]:
-        # Wall time per step (model + tools + our code), summed when a step repeats (answer, check).
         def run_step(state: State) -> State:
-            started = time.perf_counter()
-            try:
+            with _step(run, deps.progress, name):
                 return step(state)
-            finally:
-                seconds = run.usage.step_seconds
-                seconds[name] = seconds.get(name, 0.0) + time.perf_counter() - started
 
         return run_step
 
@@ -577,9 +602,40 @@ def build_graph(deps: Deps, run: RunContext) -> Any:
     return graph.compile()
 
 
+def _answer_spending(deps: Deps, run: RunContext, period: NamedPeriod) -> Outcome:
+    """The fast path (fast.py): the spending tool, a template, the verifier. No model call."""
+    with _step(run, deps.progress, "spending"):
+        started = time.perf_counter()
+        report = spending_report(deps.ledger, deps.ctx, period, deps.now)
+        run.usage.tool_seconds += time.perf_counter() - started
+        run.usage.tool_calls += 1
+        run.fetched.absorb(report)
+        run.fetched.calls.append(ToolCallRecord(name="spending", args={"period": period, "by": "code"}, ok=True))
+    with _step(run, deps.progress, "write"):
+        draft = spending_answer(report)
+    with _step(run, deps.progress, "check"):
+        # The same checker as every model answer: a template is code, but so was the bug it would hide.
+        problems = verify(draft, run.fetched, set(), "")
+    return Outcome(
+        answer=FALLBACK_TEXT if problems else draft.answer,
+        citations=[] if problems else list(draft.citations),
+        verified=not problems,
+        category="account",
+        attempts=1,
+        failures=[problems] if problems else [],
+        retrieved_ids=[],
+        tools_called=list(run.fetched.calls),
+        usage=run.usage,
+    )
+
+
 def run_question(deps: Deps, question: str, config: RunnableConfig | None = None) -> Outcome:
     """config: run name, tags and metadata for the trace (the eval tags each item); never affects behaviour."""
     run = RunContext()
+    with _step(run, deps.progress, "route"):
+        period = spending_question(question)
+    if period is not None:
+        return _answer_spending(deps, run, period)
     initial: State = {"question": question, "attempts": 0, "failures": []}
     final = cast(State, build_graph(deps, run).invoke(initial, config=config))
     return Outcome(
