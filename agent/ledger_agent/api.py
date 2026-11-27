@@ -1,15 +1,18 @@
 """HTTP: the probes, and POST /ask."""
 
+import json
 import logging
+import queue
+import threading
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
 import psycopg
 from fastapi import FastAPI, Header, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 from psycopg.rows import DictRow
@@ -19,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .config import REQUIRED_MIGRATIONS, Settings, apply_tracing_env, load_settings
 from .dates import now_utc
 from .db import ClientContext, create_pool
+from .graph import Progress
 from .llm import UpstreamModelError, build_chat_model, build_embeddings
 from .metrics import AgentMetrics
 from .notes import CitedNote
@@ -97,6 +101,78 @@ def _tracing_enabled() -> bool:
     return bool(tracing_is_enabled())
 
 
+def _answer(app: FastAPI, body: AskRequest, x_client_id: str | None, progress: Progress | None = None) -> JSONResponse:
+    """POST /ask, and the result of POST /ask/stream."""
+    metrics: AgentMetrics = app.state.metrics
+    # The client id comes from the header and nowhere else (the auth stand-in).
+    try:
+        ctx = ClientContext.from_header(x_client_id)
+    except ValueError as e:
+        metrics.not_answered("bad_request")
+        return JSONResponse(status_code=400, content={"error": {"code": "missing_client_id", "message": str(e)}})
+    assistant: Assistant | None = app.state.assistant
+    if assistant is None:
+        metrics.not_answered("upstream_failed")
+        return JSONResponse(
+            status_code=503, content={"error": {"code": "model_not_configured", "message": MODEL_BUSY_TEXT}}
+        )
+    started = time.perf_counter()
+    try:
+        result = assistant.ask(ctx, body.question, progress=progress)
+    except RateLimitedError as e:
+        metrics.not_answered("rate_limited")
+        return JSONResponse(
+            status_code=429,
+            headers={"Retry-After": "3600"},
+            content={"error": {"code": "rate_limited", "message": f"at most {e.limit} questions per 24 hours"}},
+        )
+    except UpstreamModelError as e:
+        # Logged, not recorded: an upstream failure is not a question the client asked.
+        log.warning("upstream model failure for client %s (quota: %s): %s", ctx.client_id, e.quota, e)
+        if e.quota:
+            # Its own code, so the web app can say "over today's free limit" and show a
+            # labelled scripted answer instead of pretending the assistant is just busy.
+            metrics.not_answered("upstream_quota")
+            return JSONResponse(
+                status_code=503,
+                headers={"Retry-After": "60"},
+                content={"error": {"code": "model_quota", "message": MODEL_BUSY_TEXT}},
+            )
+        metrics.not_answered("upstream_failed")
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "30"},
+            content={"error": {"code": "model_unavailable", "message": MODEL_BUSY_TEXT}},
+        )
+    # Where the time went, per question (step 7g). No question or answer text: only counts and seconds.
+    log.info(
+        "answered run=%s category=%s verified=%s attempts=%d chat_calls=%d embed_calls=%d tool_calls=%d "
+        "total_s=%.2f model_s=%.2f tool_s=%.2f steps=%s",
+        result.run_id,
+        result.category,
+        result.verified,
+        result.attempts,
+        result.chat_calls,
+        result.embed_calls,
+        len(result.tools),
+        result.latency_s,
+        result.model_s,
+        result.tool_s,
+        " ".join(f"{name}:{seconds:.2f}" for name, seconds in result.steps_s),
+    )
+    metrics.answered(result, REFUSAL_TEXT, FALLBACK_TEXT, time.perf_counter() - started)
+    return JSONResponse(
+        status_code=200,
+        content=AskResponse(
+            answer=result.answer,
+            citations=result.citations,
+            verified=result.verified,
+            run_id=result.run_id,
+            notes=list(result.notes),
+        ).model_dump(mode="json"),
+    )
+
+
 def create_app(
     settings: Settings | None = None,
     chat: BaseChatModel | None = None,
@@ -141,74 +217,46 @@ def create_app(
 
     @app.post("/ask", response_model=AskResponse)
     def ask(request: Request, body: AskRequest, x_client_id: str | None = Header(default=None)) -> JSONResponse:
-        metrics: AgentMetrics = request.app.state.metrics
-        # The client id comes from the header and nowhere else (the auth stand-in).
-        try:
-            ctx = ClientContext.from_header(x_client_id)
-        except ValueError as e:
-            metrics.not_answered("bad_request")
-            return JSONResponse(status_code=400, content={"error": {"code": "missing_client_id", "message": str(e)}})
-        assistant: Assistant | None = request.app.state.assistant
-        if assistant is None:
-            metrics.not_answered("upstream_failed")
-            return JSONResponse(
-                status_code=503, content={"error": {"code": "model_not_configured", "message": MODEL_BUSY_TEXT}}
-            )
-        started = time.perf_counter()
-        try:
-            result = assistant.ask(ctx, body.question)
-        except RateLimitedError as e:
-            metrics.not_answered("rate_limited")
-            return JSONResponse(
-                status_code=429,
-                headers={"Retry-After": "3600"},
-                content={"error": {"code": "rate_limited", "message": f"at most {e.limit} questions per 24 hours"}},
-            )
-        except UpstreamModelError as e:
-            # Logged, not recorded: an upstream failure is not a question the client asked.
-            log.warning("upstream model failure for client %s (quota: %s): %s", ctx.client_id, e.quota, e)
-            if e.quota:
-                # Its own code, so the web app can say "over today's free limit" and show a
-                # labelled scripted answer instead of pretending the assistant is just busy.
-                metrics.not_answered("upstream_quota")
-                return JSONResponse(
-                    status_code=503,
-                    headers={"Retry-After": "60"},
-                    content={"error": {"code": "model_quota", "message": MODEL_BUSY_TEXT}},
-                )
-            metrics.not_answered("upstream_failed")
-            return JSONResponse(
-                status_code=503,
-                headers={"Retry-After": "30"},
-                content={"error": {"code": "model_unavailable", "message": MODEL_BUSY_TEXT}},
-            )
-        # Where the time went, per question (step 7g). No question or answer text: only counts and seconds.
-        log.info(
-            "answered run=%s category=%s verified=%s attempts=%d chat_calls=%d embed_calls=%d tool_calls=%d "
-            "total_s=%.2f model_s=%.2f tool_s=%.2f steps=%s",
-            result.run_id,
-            result.category,
-            result.verified,
-            result.attempts,
-            result.chat_calls,
-            result.embed_calls,
-            len(result.tools),
-            result.latency_s,
-            result.model_s,
-            result.tool_s,
-            " ".join(f"{name}:{seconds:.2f}" for name, seconds in result.steps_s),
-        )
-        metrics.answered(result, REFUSAL_TEXT, FALLBACK_TEXT, time.perf_counter() - started)
-        return JSONResponse(
-            status_code=200,
-            content=AskResponse(
-                answer=result.answer,
-                citations=result.citations,
-                verified=result.verified,
-                run_id=result.run_id,
-                notes=list(result.notes),
-            ).model_dump(mode="json"),
-        )
+        return _answer(request.app, body, x_client_id)
+
+    @app.post("/ask/stream")
+    def ask_stream(
+        request: Request, body: AskRequest, x_client_id: str | None = Header(default=None)
+    ) -> StreamingResponse:
+        """The same answer as POST /ask, as NDJSON: one line per step as it starts and ends, then the result.
+
+        {"type": "step", "step": "classify", "status": "start"}
+        {"type": "step", "step": "classify", "status": "done", "seconds": 2.31}
+        {"type": "result", "status": 200, "body": {...the body POST /ask would send...}}
+
+        The HTTP status is always 200 once the stream starts; the result line carries the real one.
+        """
+        events: queue.Queue[dict[str, Any] | None] = queue.Queue()
+
+        def progress(step: str, seconds: float | None) -> None:
+            event: dict[str, Any] = {"type": "step", "step": step, "status": "start" if seconds is None else "done"}
+            if seconds is not None:
+                event["seconds"] = round(seconds, 2)
+            events.put(event)
+
+        def work() -> None:
+            try:
+                response = _answer(request.app, body, x_client_id, progress)
+                events.put({"type": "result", "status": response.status_code, "body": json.loads(bytes(response.body))})
+            except Exception:
+                log.exception("ask/stream failed")
+                error = {"error": {"code": "internal", "message": MODEL_BUSY_TEXT}}
+                events.put({"type": "result", "status": 500, "body": error})
+            finally:
+                events.put(None)
+
+        threading.Thread(target=work, name="ask-stream", daemon=True).start()
+
+        def lines() -> Iterator[str]:
+            while (event := events.get()) is not None:
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+
+        return StreamingResponse(lines(), media_type="application/x-ndjson", headers={"cache-control": "no-store"})
 
     return app
 

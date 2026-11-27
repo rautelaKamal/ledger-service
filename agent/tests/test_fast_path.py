@@ -4,17 +4,23 @@ The 7g live check answered these correctly but took 8 to 24 s and 4 model calls 
 decided the period, the sum and the range. Here every test's model raises if it is called at all.
 """
 
+import json
+from typing import Any
+
 import psycopg
 import pytest
+from fastapi.testclient import TestClient
 from psycopg.rows import DictRow
 
+from ledger_agent.api import create_app
 from ledger_agent.config import Settings
 from ledger_agent.dates import EN_DASH, NamedPeriod
 from ledger_agent.fast import spending_question
 from ledger_agent.service import Assistant
+from ledger_agent.verify import Answer
 
 from .conftest import Seed
-from .fakes import FakeChatModel, FakeEmbeddings, Script
+from .fakes import FakeChatModel, FakeEmbeddings, Script, ToolCall
 from .test_spending import EXPECTED, NOW, World
 
 NO_MODEL = AssertionError("the fast path must not call the model")
@@ -125,3 +131,82 @@ def test_a_period_with_no_spending_says_so_with_the_range(pool: object, settings
     result = assistant(pool, settings).ask(ctx, "What did I spend yesterday?")
     assert result.verified and result.citations == []
     assert result.answer == "On 25 Nov 2026 you spent ₹0.00: no payments to other people." + NOT_SPENDING
+
+
+# ───────────── POST /ask/stream: each step as it happens, then the same result ─────────────
+
+
+def stream(client: TestClient, client_id: str, question: str) -> list[dict[str, Any]]:
+    with client.stream("POST", "/ask/stream", json={"question": question}, headers={"X-Client-Id": client_id}) as res:
+        assert res.status_code == 200 and res.headers["content-type"].startswith("application/x-ndjson")
+        return [json.loads(line) for line in res.iter_lines() if line]
+
+
+def steps(events: list[dict[str, Any]]) -> list[str]:
+    return [f"{e['step']}:{e['status']}" for e in events if e["type"] == "step"]
+
+
+def test_the_stream_reports_each_step_then_the_answer_post_ask_would_give(settings: Settings, seed: Seed) -> None:
+    world = World(seed)
+    app = create_app(settings, chat=FakeChatModel(script=Script(fail_with=NO_MODEL)), embeddings=FakeEmbeddings())
+    app.state.now_fn = lambda: NOW
+    with TestClient(app) as client:
+        events = stream(client, world.ctx.client_id, "What did I spend last week?")
+        plain = client.post(
+            "/ask", json={"question": "What did I spend last week?"}, headers={"X-Client-Id": world.ctx.client_id}
+        )
+    assert steps(events) == [
+        "route:start",
+        "route:done",
+        "spending:start",
+        "spending:done",
+        "write:start",
+        "write:done",
+        "check:start",
+        "check:done",
+    ]
+    assert all(isinstance(e["seconds"], float) for e in events if e.get("status") == "done")
+    *_, result = events
+    assert result["type"] == "result" and result["status"] == 200
+    assert {**result["body"], "run_id": 0} == {**plain.json(), "run_id": 0}
+    assert result["body"]["answer"].startswith(WRITTEN["last_week"])
+
+
+def test_the_stream_shows_the_graph_steps_for_other_questions(settings: Settings, seed: Seed) -> None:
+    ctx = seed.client()
+    acct = seed.account(ctx, "main")
+    seed.posted("topup", seed.settlement(), acct, 4_200)
+    script = Script(rounds=[[ToolCall("list_my_accounts", {})], []], answers=[Answer(answer="Your balance is ₹42.00.")])
+    app = create_app(settings, chat=FakeChatModel(script=script), embeddings=FakeEmbeddings(), now_fn=lambda: NOW)
+    with TestClient(app) as client:
+        events = stream(client, ctx.client_id, "balance?")
+    assert [s for s in steps(events) if s.endswith(":done")] == [
+        "route:done",
+        "classify:done",
+        "fetch:done",
+        "answer:done",
+        "check:done",
+    ]
+    assert events[-1]["status"] == 200 and events[-1]["body"]["answer"] == "Your balance is ₹42.00."
+
+
+def test_a_failure_in_the_stream_ends_with_the_status_post_ask_would_give(settings: Settings, seed: Seed) -> None:
+    from .test_ask_api import _chat_rate_limit
+
+    ctx = seed.client()
+    app = create_app(
+        settings,
+        chat=FakeChatModel(script=Script(fail_with=_chat_rate_limit())),
+        embeddings=FakeEmbeddings(),
+        now_fn=lambda: NOW,
+    )
+    with TestClient(app) as client:
+        events = stream(client, ctx.client_id, "balance?")
+        missing = stream(client, "", "balance?")
+    assert steps(events) == ["route:start", "route:done", "classify:start"]  # classify never finished
+    assert events[-1] == {
+        "type": "result",
+        "status": 503,
+        "body": {"error": {"code": "model_quota", "message": events[-1]["body"]["error"]["message"]}},
+    }
+    assert missing[-1]["status"] == 400
