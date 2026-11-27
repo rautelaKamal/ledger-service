@@ -4,10 +4,13 @@ import { useId, useRef, useState } from 'react';
 import { Stamp } from '@/components/stamp';
 import { Button } from '@/components/ui/button';
 import type { AssistantAnswer, Citation } from '@/lib/server/assistant';
+import { applyStep, stepLabel, type LiveStep } from '@/lib/assistant-steps';
+import { isResultEvent, isStepEvent, NDJSON, readNdjson } from '@/lib/ndjson';
 import { cn } from '@/lib/utils';
 
 type Turn = { id: number; question: string } & (
-  | { state: 'waiting' }
+  // steps: the live assistant's, as they happen (empty for the script, which answers at once)
+  | { state: 'waiting'; steps: LiveStep[] }
   | { state: 'done'; answer: AssistantAnswer }
   | { state: 'error'; message: string }
   // Over a limit: the question was never sent to the model. Not a failure of the service.
@@ -26,6 +29,8 @@ export const WITHHELD = 'The live assistant answered, but code could not confirm
 function footnote(answer: AssistantAnswer): string {
   return answer.mode === 'agent' && answer.verified === false ? WITHHELD : FOOTNOTE[answer.mode];
 }
+
+type Reply = AssistantAnswer | { error: string; limited?: boolean };
 
 const KIND: Record<Citation['kind'], string> = { account: 'Account', transaction: 'Transaction', policy: 'Policy' };
 
@@ -106,6 +111,30 @@ function Answer({ turn, answer }: { turn: Turn; answer: AssistantAnswer }) {
   );
 }
 
+/** The live assistant at work: each step as it starts, with its time once it is done. */
+function Progress({ steps }: { steps: LiveStep[] }) {
+  return (
+    <div role="status" className="flex flex-col gap-1 text-ink-soft">
+      <p>Fetching your data and checking every amount…</p>
+      {steps.length ? (
+        <ol aria-label="Steps so far" className="flex flex-col gap-0.5 pl-1 text-sm">
+          {steps.map((s, i) => (
+            <li key={i} className={cn('flex gap-2', s.seconds === undefined ? 'text-ink' : '')}>
+              <span aria-hidden="true" className="w-4 shrink-0 text-center">
+                {s.seconds === undefined ? '…' : '✓'}
+              </span>
+              <span>
+                {stepLabel(s.step)}
+                {s.seconds === undefined ? null : <span className="tabular-nums"> ({s.seconds.toFixed(1)} s)</span>}
+              </span>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </div>
+  );
+}
+
 export function Chat({ suggested }: { suggested: readonly string[] }) {
   const ids = useId();
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -117,14 +146,26 @@ export function Chat({ suggested }: { suggested: readonly string[] }) {
     const text = q.trim();
     if (!text || busy) return;
     const id = next.current++;
-    setTurns((t) => [...t, { id, question: text, state: 'waiting' }]);
+    setTurns((t) => [...t, { id, question: text, state: 'waiting', steps: [] }]);
     setQuestion('');
     try {
-      const res = await fetch('/api/ask', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question: text }) });
-      const body = (await res.json()) as AssistantAnswer | { error: string; limited?: boolean };
+      const res = await fetch('/api/ask', { method: 'POST', headers: { 'content-type': 'application/json', accept: `${NDJSON}, application/json` }, body: JSON.stringify({ question: text }) });
+      let status = res.status;
+      let body: Reply | null = null;
+      if (res.body && res.headers.get('content-type')?.startsWith(NDJSON)) {
+        for await (const event of readNdjson(res.body)) {
+          if (isStepEvent(event)) setTurns((t) => t.map((x) => (x.id === id && x.state === 'waiting' ? { ...x, steps: applyStep(x.steps, event) } : x)));
+          else if (isResultEvent(event)) [status, body] = [event.status, event.body as Reply | null];
+        }
+      } else {
+        body = (await res.json()) as Reply;
+      }
+      const reply = body as Reply | null; // assigned in the loop above: TypeScript cannot follow that into turn()
       const turn = (): Turn => {
+        const body = reply;
+        if (!body) return { id, question: text, state: 'error', message: 'the answer was cut off' };
         if ('error' in body) return body.limited ? { id, question: text, state: 'limited', message: body.error } : { id, question: text, state: 'error', message: body.error };
-        if (!res.ok) return { id, question: text, state: 'error', message: `status ${res.status}` };
+        if (status !== 200) return { id, question: text, state: 'error', message: `status ${status}` };
         return { id, question: text, state: 'done', answer: body };
       };
       setTurns((t) => t.map((x) => (x.id !== id ? x : turn())));
@@ -145,7 +186,7 @@ export function Chat({ suggested }: { suggested: readonly string[] }) {
                 <span className="sr-only">You asked: </span>
                 {turn.question}
               </p>
-              {turn.state === 'waiting' ? <p className="text-ink-soft">Fetching your data and checking every amount…</p> : null}
+              {turn.state === 'waiting' ? <Progress steps={turn.steps} /> : null}
               {turn.state === 'error' ? (
                 <p role="alert" className="border-l-2 border-failed pl-3 text-failed">
                   No answer: {turn.message}.

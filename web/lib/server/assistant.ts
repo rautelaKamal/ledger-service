@@ -6,6 +6,7 @@ import type { Account, PassbookRow } from '@/lib/types';
 import { fromAgentBody, type AgentBody } from '@/lib/agent-answer';
 import { lastSevenDays } from '@/lib/spending';
 import { FALLBACK_NOTICE, type FallbackReason } from '@/lib/assistant-labels';
+import { isResultEvent, isStepEvent, NDJSON, readNdjson, type StepEvent } from '@/lib/ndjson';
 import { env } from './env';
 import { clientIdOf } from './identity';
 import { redisLimiter, type Limiter } from './limits';
@@ -203,16 +204,29 @@ async function scripted(persona: Persona, question: string): Promise<AssistantAn
   };
 }
 
-async function viaAgent(persona: Persona, question: string): Promise<AssistantAnswer> {
-  const res = await fetch(`${env.AGENT_URL}/ask`, {
+/** Told as each of the agent's steps starts and ends (POST /ask/stream). */
+export type OnStep = (event: StepEvent) => void;
+
+async function viaAgent(persona: Persona, question: string, onStep?: OnStep): Promise<AssistantAnswer> {
+  const res = await fetch(`${env.AGENT_URL}/${onStep ? 'ask/stream' : 'ask'}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-client-id': clientIdOf(persona) },
     body: JSON.stringify({ question }),
     cache: 'no-store',
     signal: AbortSignal.timeout(60_000),
   });
-  const body = (await res.json().catch(() => null)) as Partial<AgentBody> | null;
-  if (!res.ok || !body?.answer) throw new UpstreamError(res.status, body, 'assistant');
+  let status = res.status;
+  let body: Partial<AgentBody> | null = null;
+  if (onStep && res.ok && res.body && res.headers.get('content-type')?.startsWith(NDJSON)) {
+    // Steps as they happen, then the status and body POST /ask would have sent.
+    for await (const event of readNdjson(res.body)) {
+      if (isStepEvent(event)) onStep(event);
+      else if (isResultEvent(event)) [status, body] = [event.status, event.body as Partial<AgentBody> | null];
+    }
+  } else {
+    body = (await res.json().catch(() => null)) as Partial<AgentBody> | null;
+  }
+  if (status !== 200 || !body?.answer) throw new UpstreamError(status, body, 'assistant');
   return fromAgentBody({ ...body, answer: body.answer });
 }
 
@@ -247,7 +261,7 @@ async function fallback(persona: Persona, question: string, reason: FallbackReas
  *      answers, labelled. The agent's own per-person daily limit (429): a message.
  *      Anything else is an error, as before.
  */
-async function live(persona: Persona, visitor: string, question: string): Promise<AskOutcome> {
+async function live(persona: Persona, visitor: string, question: string, onStep?: OnStep): Promise<AskOutcome> {
   const decision = await theLimiter().take(visitor);
   if (!decision.ok) {
     if (decision.reason === 'unavailable') return fallback(persona, question, 'limiterDown');
@@ -263,7 +277,7 @@ async function live(persona: Persona, visitor: string, question: string): Promis
     };
   }
   try {
-    return { kind: 'answer', answer: await viaAgent(persona, question) };
+    return { kind: 'answer', answer: await viaAgent(persona, question, onStep) };
   } catch (err) {
     if (!(err instanceof UpstreamError) || err.service !== 'assistant') throw err;
     const code = (err.body as { error?: { code?: string } } | null)?.error?.code;
@@ -274,8 +288,8 @@ async function live(persona: Persona, visitor: string, question: string): Promis
   }
 }
 
-export async function ask(persona: Persona, visitor: string, question: string): Promise<AskOutcome> {
-  if (env.ASSISTANT_MODE === 'agent') return live(persona, visitor, question);
+export async function ask(persona: Persona, visitor: string, question: string, onStep?: OnStep): Promise<AskOutcome> {
+  if (env.ASSISTANT_MODE === 'agent') return live(persona, visitor, question, onStep);
   return { kind: 'answer', answer: await scripted(persona, question) };
 }
 

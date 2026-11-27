@@ -127,6 +127,32 @@ test.describe('live mode, an answer code could not confirm', () => {
   });
 });
 
+test.describe('live mode, step by step', () => {
+  test.use({ baseURL: WEB_LIVE });
+
+  test('32. while the live assistant works, each step shows as it happens, with its time once done', async ({ page, request }) => {
+    // The stand-in keeps its fetch step open for 3 s: long enough to see the stream arrive in pieces.
+    await request.post(`${AGENT}/mode`, { data: { mode: 'answer', holdMs: 3000 } });
+    await become(page, 'Kavya Nair');
+    await page.goto('/assistant');
+    const question = 'Why is my balance lower than last week?';
+    const turn = await ask(page, question);
+    const progress = turn.getByRole('status');
+    const step = (label: string) => progress.getByRole('listitem').filter({ hasText: label });
+
+    await expect(step('Working out what you are asking (AI model)')).toHaveText(/\(AI model\) \(\d+\.\d s\)$/);
+    const fetching = step('Fetching your data from the ledger (AI model picks what to fetch)');
+    await expect(fetching).toBeVisible();
+    await expect(fetching).not.toHaveText(/ s\)$/); // still running: no time yet
+    await expect(turn.getByText(/^Live answer from the stand-in agent/)).toHaveCount(0); // the steps came first
+    await expectAccessible(page);
+
+    await expect(turn.getByText(`Live answer from the stand-in agent to: ${question}`)).toBeVisible();
+    await expect(progress).toHaveCount(0); // the answer replaces the progress
+    expect((await agentCalls(request)).map((c) => c.question)).toEqual([question]); // one question, one call
+  });
+});
+
 test.describe('Redis down', () => {
   test.use({ baseURL: WEB_NO_REDIS });
 
